@@ -324,6 +324,26 @@ CREATE TABLE IF NOT EXISTS source_items (
 );
 CREATE INDEX IF NOT EXISTS source_items_media ON source_items(media_type, tmdb_id);
 
+CREATE TABLE IF NOT EXISTS usenet_items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_type      TEXT    NOT NULL CHECK (media_type IN ('movie', 'episode')),
+  tmdb_id         INTEGER NOT NULL,
+  season          INTEGER,
+  episode         INTEGER,
+  nzb_title       TEXT    NOT NULL DEFAULT '',
+  nzb_download_url TEXT   NOT NULL DEFAULT '',
+  video_filename  TEXT    NOT NULL DEFAULT '',
+  total_bytes     INTEGER NOT NULL DEFAULT 0,
+  segments_json   TEXT    NOT NULL DEFAULT '[]',
+  status          TEXT    NOT NULL DEFAULT 'indexed' CHECK (status IN ('indexed', 'failed')),
+  indexed_at      INTEGER NOT NULL,
+  fail_count      INTEGER NOT NULL DEFAULT 0,
+  fail_reason     TEXT    NOT NULL DEFAULT '',
+  UNIQUE(media_type, tmdb_id, season, episode)
+);
+CREATE INDEX IF NOT EXISTS usenet_items_movie   ON usenet_items(media_type, tmdb_id) WHERE media_type = 'movie';
+CREATE INDEX IF NOT EXISTS usenet_items_episode ON usenet_items(media_type, tmdb_id, season, episode) WHERE media_type = 'episode';
+
 CREATE TABLE IF NOT EXISTS hidden_library_items (
   media_type TEXT    NOT NULL CHECK (media_type IN ('movie', 'show')),
   tmdb_id    INTEGER NOT NULL,
@@ -956,13 +976,14 @@ function sortDirection(sortOrder?: string): 'ASC' | 'DESC' {
   return normalized === 'asc' || normalized === 'ascending' ? 'ASC' : 'DESC'
 }
 
-function movieAvailabilityWhere(availableOnly: boolean): string {
+function movieAvailabilityWhere(_availableOnly: boolean): string {
   const clauses = [
     `EXISTS (
       SELECT 1
-      FROM source_items
-      WHERE source_items.media_type = 'movie'
-        AND source_items.tmdb_id = movies.tmdb_id
+      FROM usenet_items
+      WHERE usenet_items.media_type = 'movie'
+        AND usenet_items.tmdb_id = movies.tmdb_id
+        AND usenet_items.status = 'indexed'
     )`,
     `NOT EXISTS (
       SELECT 1
@@ -971,53 +992,17 @@ function movieAvailabilityWhere(availableOnly: boolean): string {
         AND hidden_library_items.tmdb_id = movies.tmdb_id
     )`,
   ]
-  if (availableOnly) {
-    const effectiveReleaseMode = `COALESCE((
-      SELECT mode
-      FROM movie_release_preferences
-      WHERE movie_release_preferences.movie_tmdb_id = movies.tmdb_id
-    ), ${sqlStringLiteral(config.movieReleaseMode)})`
-    const theatricalAvailability = `(
-      (release_date != '' AND release_date <= date('now'))
-      OR (
-        release_date = ''
-        AND digital_release_date != ''
-        AND digital_release_date <= date('now')
-      )
-    )`
-    const digitalAvailability = `(
-      (digital_release_date != '' AND digital_release_date <= date('now'))
-      OR (
-        digital_release_date = ''
-        AND release_date != ''
-        AND date(release_date, '+45 day') <= date('now')
-      )
-    )`
-    clauses.push(`(
-        EXISTS (
-          SELECT 1
-          FROM manual_movie_availability_overrides
-          WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
-            AND manual_movie_availability_overrides.ignore_release_gate = 1
-        )
-        OR (
-          CASE ${effectiveReleaseMode}
-            WHEN 'theatrical' THEN ${theatricalAvailability}
-            ELSE ${digitalAvailability}
-          END
-        )
-      )`)
-  }
   return `WHERE ${clauses.join('\n  AND ')}`
 }
 
-function showAvailabilityWhere(availableOnly: boolean): string {
+function showAvailabilityWhere(_availableOnly: boolean): string {
   const clauses = [
     `EXISTS (
       SELECT 1
-      FROM source_items
-      WHERE source_items.media_type = 'show'
-        AND source_items.tmdb_id = shows.tmdb_id
+      FROM usenet_items
+      WHERE usenet_items.media_type = 'episode'
+        AND usenet_items.tmdb_id = shows.tmdb_id
+        AND usenet_items.status = 'indexed'
     )`,
     `NOT EXISTS (
       SELECT 1
@@ -1026,16 +1011,6 @@ function showAvailabilityWhere(availableOnly: boolean): string {
         AND hidden_library_items.tmdb_id = shows.tmdb_id
     )`,
   ]
-  if (availableOnly) {
-    const today = sqlStringLiteral(todayIsoDate())
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM episodes
-      WHERE episodes.show_tmdb_id = shows.tmdb_id
-        AND episodes.air_date != ''
-        AND episodes.air_date < ${today}
-    )`)
-  }
   return `WHERE ${clauses.join('\n  AND ')}`
 }
 
@@ -1248,11 +1223,16 @@ export function getEpisodesForSeason(showTmdbId: number, seasonNumber: number): 
 }
 
 export function getAiredEpisodesForSeason(showTmdbId: number, seasonNumber: number): Episode[] {
-  const today = todayIsoDate()
   return (getDb().prepare(
-    `SELECT * FROM episodes WHERE show_tmdb_id = ? AND season_number = ?
-     AND air_date != '' AND air_date < ? ORDER BY episode_number ASC`
-  ).all(showTmdbId, seasonNumber, today) as Record<string, unknown>[]).map(row2episode)
+    `SELECT e.* FROM episodes e
+     INNER JOIN usenet_items ui ON ui.media_type = 'episode'
+       AND ui.tmdb_id = e.show_tmdb_id
+       AND ui.season = e.season_number
+       AND ui.episode = e.episode_number
+       AND ui.status = 'indexed'
+     WHERE e.show_tmdb_id = ? AND e.season_number = ?
+     ORDER BY e.episode_number ASC`
+  ).all(showTmdbId, seasonNumber) as Record<string, unknown>[]).map(row2episode)
 }
 
 export function getEpisodesForShow(showTmdbId: number): Episode[] {
@@ -2329,4 +2309,123 @@ export function markUnplayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): vo
       watch_state_source     = 'local',
       watch_state_updated_at = excluded.watch_state_updated_at
   `).run(userId, itemId, now)
+}
+
+// ── Usenet items ──────────────────────────────────────────────────────────────
+
+export interface UsenetItem {
+  id: number
+  mediaType: 'movie' | 'episode'
+  tmdbId: number
+  season: number | null
+  episode: number | null
+  nzbTitle: string
+  nzbDownloadUrl: string
+  videoFilename: string
+  totalBytes: number
+  segmentsJson: string
+  status: 'indexed' | 'failed'
+  indexedAt: number
+  failCount: number
+  failReason: string
+}
+
+function row2usenetItem(r: Record<string, unknown>): UsenetItem {
+  return {
+    id:             r.id as number,
+    mediaType:      r.media_type as 'movie' | 'episode',
+    tmdbId:         r.tmdb_id as number,
+    season:         r.season as number | null,
+    episode:        r.episode as number | null,
+    nzbTitle:       r.nzb_title as string,
+    nzbDownloadUrl: r.nzb_download_url as string,
+    videoFilename:  r.video_filename as string,
+    totalBytes:     r.total_bytes as number,
+    segmentsJson:   r.segments_json as string,
+    status:         r.status as 'indexed' | 'failed',
+    indexedAt:      r.indexed_at as number,
+    failCount:      r.fail_count as number,
+    failReason:     r.fail_reason as string,
+  }
+}
+
+export function upsertUsenetItem(item: Omit<UsenetItem, 'id' | 'failCount' | 'failReason'>): number {
+  const result = getDb().prepare(`
+    INSERT INTO usenet_items
+      (media_type, tmdb_id, season, episode, nzb_title, nzb_download_url, video_filename, total_bytes, segments_json, status, indexed_at)
+    VALUES (@mediaType, @tmdbId, @season, @episode, @nzbTitle, @nzbDownloadUrl, @videoFilename, @totalBytes, @segmentsJson, @status, @indexedAt)
+    ON CONFLICT(media_type, tmdb_id, season, episode) DO UPDATE SET
+      nzb_title        = excluded.nzb_title,
+      nzb_download_url = excluded.nzb_download_url,
+      video_filename   = excluded.video_filename,
+      total_bytes      = excluded.total_bytes,
+      segments_json    = excluded.segments_json,
+      status           = excluded.status,
+      indexed_at       = excluded.indexed_at,
+      fail_count       = 0,
+      fail_reason      = ''
+  `).run(item)
+  return (result as { lastInsertRowid: number }).lastInsertRowid
+}
+
+export function markUsenetItemFailed(mediaType: 'movie' | 'episode', tmdbId: number, season: number | null, episode: number | null, reason: string): void {
+  getDb().prepare(`
+    INSERT INTO usenet_items
+      (media_type, tmdb_id, season, episode, status, indexed_at, fail_count, fail_reason)
+    VALUES (@mediaType, @tmdbId, @season, @episode, 'failed', @indexedAt, 1, @reason)
+    ON CONFLICT(media_type, tmdb_id, season, episode) DO UPDATE SET
+      status     = 'failed',
+      fail_count = fail_count + 1,
+      fail_reason = excluded.fail_reason,
+      indexed_at  = excluded.indexed_at
+  `).run({ mediaType, tmdbId, season, episode, indexedAt: Date.now(), reason })
+}
+
+export function getUsenetItemById(id: number): UsenetItem | null {
+  const r = getDb().prepare(`SELECT * FROM usenet_items WHERE id = ?`).get(id)
+  return r ? row2usenetItem(r as Record<string, unknown>) : null
+}
+
+export function getUsenetMovieItem(tmdbId: number): UsenetItem | null {
+  const r = getDb().prepare(
+    `SELECT * FROM usenet_items WHERE media_type = 'movie' AND tmdb_id = ? AND status = 'indexed' LIMIT 1`
+  ).get(tmdbId)
+  return r ? row2usenetItem(r as Record<string, unknown>) : null
+}
+
+export function getUsenetEpisodeItem(showTmdbId: number, season: number, episode: number): UsenetItem | null {
+  const r = getDb().prepare(
+    `SELECT * FROM usenet_items WHERE media_type = 'episode' AND tmdb_id = ? AND season = ? AND episode = ? AND status = 'indexed' LIMIT 1`
+  ).get(showTmdbId, season, episode)
+  return r ? row2usenetItem(r as Record<string, unknown>) : null
+}
+
+export function listUnindexedMovieTmdbIds(): number[] {
+  return (getDb().prepare(`
+    SELECT m.tmdb_id FROM movies m
+    INNER JOIN source_items si ON si.media_type = 'movie' AND si.tmdb_id = m.tmdb_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM usenet_items ui
+      WHERE ui.media_type = 'movie' AND ui.tmdb_id = m.tmdb_id AND ui.status = 'indexed'
+    )
+  `).all() as Array<{ tmdb_id: number }>).map(r => r.tmdb_id)
+}
+
+export function listUnindexedEpisodes(): Array<{ showTmdbId: number; season: number; episode: number }> {
+  return (getDb().prepare(`
+    SELECT e.show_tmdb_id, e.season_number, e.episode_number
+    FROM episodes e
+    INNER JOIN shows s ON s.tmdb_id = e.show_tmdb_id
+    INNER JOIN source_items si ON si.media_type = 'show' AND si.tmdb_id = s.tmdb_id
+    WHERE e.air_date != '' AND e.air_date <= date('now')
+      AND NOT EXISTS (
+        SELECT 1 FROM usenet_items ui
+        WHERE ui.media_type = 'episode'
+          AND ui.tmdb_id = e.show_tmdb_id
+          AND ui.season = e.season_number
+          AND ui.episode = e.episode_number
+          AND ui.status = 'indexed'
+      )
+  `).all() as Array<{ show_tmdb_id: number; season_number: number; episode_number: number }>)
+    .map(r => ({ showTmdbId: r.show_tmdb_id, season: r.season_number, episode: r.episode_number }))
 }

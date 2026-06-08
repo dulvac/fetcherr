@@ -19,14 +19,15 @@ import {
   trackDirectTorBoxUrl,
   torBoxRequestdlTorrentId,
 } from './torbox.js'
-import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
+import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription, getUsenetItemById } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
-import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStream, usenetStreamJobs } from './usenet/resolve.js'
+import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStream } from './usenet/resolve.js'
 import { getNntpPool } from './usenet/nntp-pool.js'
 import { ydecode } from './usenet/ydecode.js'
-import { segmentIndexForOffset } from './usenet/nzb-parser.js'
+import { segmentIndexForOffset, buildOffsetTable } from './usenet/nzb-parser.js'
+import { startUsenetSync } from './usenet/sync.js'
 
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
 import { streamMetadataText } from './streamUtils.js'
@@ -136,6 +137,7 @@ getDb()
 }
 
 rehydrateTorBoxCleanupJobs()
+startUsenetSync()
 
 // Wrap Fastify logger so UI log viewer captures it
 wrapFastifyLogger(app)
@@ -1610,13 +1612,16 @@ async function buildPlaybackMediaSources(input: {
 
 // ── Usenet streaming endpoint ─────────────────────────────────────────────────
 
-app.get('/usenet/stream/:jobId', async (req, reply) => {
-  const { jobId } = req.params as { jobId: string }
-  const job = usenetStreamJobs.get(jobId)
-  if (!job) return reply.code(404).send({ error: 'Stream not found or expired' })
+app.get('/usenet/stream/:itemId', async (req, reply) => {
+  const { itemId } = req.params as { itemId: string }
+  const item = getUsenetItemById(parseInt(itemId, 10))
+  if (!item || item.status !== 'indexed') return reply.code(404).send({ error: 'Stream not found' })
 
-  const ext = job.filename.split('.').pop()?.toLowerCase() ?? 'mkv'
+  const ext = item.videoFilename.split('.').pop()?.toLowerCase() ?? 'mkv'
   const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
+
+  const segments = JSON.parse(item.segmentsJson) as Array<{ messageId: string; bytes: number; number: number }>
+  const offsets = buildOffsetTable(segments)
 
   const rangeHeader = (req.headers as Record<string, string | undefined>).range
   let startSegment = 0
@@ -1626,8 +1631,8 @@ app.get('/usenet/stream/:jobId', async (req, reply) => {
     const rangeMatch = rangeHeader.match(/bytes=(\d+)-/)
     if (rangeMatch) {
       const rangeStart = parseInt(rangeMatch[1], 10)
-      startSegment = segmentIndexForOffset(job.offsets, rangeStart)
-      startByteWithinSegment = rangeStart - job.offsets[startSegment]
+      startSegment = segmentIndexForOffset(offsets, rangeStart)
+      startByteWithinSegment = rangeStart - offsets[startSegment]
     }
   }
 
@@ -1639,19 +1644,19 @@ app.get('/usenet/stream/:jobId', async (req, reply) => {
     'Cache-Control': 'no-cache',
   }
   if (rangeHeader && startSegment === 0 && startByteWithinSegment === 0) {
-    headers['Content-Range'] = `bytes 0-*/${job.estimatedTotalBytes}`
+    headers['Content-Range'] = `bytes 0-*/${item.totalBytes}`
   } else if (rangeHeader) {
-    const startByte = job.offsets[startSegment] + startByteWithinSegment
-    headers['Content-Range'] = `bytes ${startByte}-*/${job.estimatedTotalBytes}`
+    const startByte = offsets[startSegment] + startByteWithinSegment
+    headers['Content-Range'] = `bytes ${startByte}-*/${item.totalBytes}`
   }
 
   reply.raw.writeHead(statusCode, headers)
 
   const pool = getNntpPool()
   try {
-    for (let i = startSegment; i < job.segments.length; i++) {
-      const seg = job.segments[i]
-      app.log.info(`usenet: streaming segment ${seg.number}/${job.segments.length} for job ${jobId}`)
+    for (let i = startSegment; i < segments.length; i++) {
+      const seg = segments[i]
+      app.log.info(`usenet: streaming segment ${seg.number}/${segments.length} for item ${itemId}`)
       const body = await pool.fetchArticleBody(seg.messageId)
       const decoded = ydecode(body)
       const data = i === startSegment && startByteWithinSegment > 0
@@ -1664,38 +1669,17 @@ app.get('/usenet/stream/:jobId', async (req, reply) => {
       if ((reply.raw as NodeJS.WritableStream & { destroyed?: boolean }).destroyed) break
     }
   } catch (err) {
-    app.log.warn(`usenet: stream error for job ${jobId}: ${err}`)
+    app.log.warn(`usenet: stream error for item ${itemId}: ${err}`)
   } finally {
     reply.raw.end()
   }
 })
-async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
-  const playPath = `/play/${imdbId}`
-  const hasStreamProvider = Boolean(config.sootioUrl) || config.streamProviderUrls.length > 0
-  const hasUsenet = isUsenetConfigured()
-
-  if (hasStreamProvider) {
-    try {
-      const streams = await fetchRankedStreams(imdbId, config.preferredAudioLanguage, '', playbackClient, true)
-      return await resolvePlayableStream(streams, imdbId, playPath, undefined, true)
-    } catch (err) {
-      if (!hasUsenet) throw err
-      app.log.info(`play: stream provider failed for ${imdbId}, falling back: ${err}`)
-    }
-  }
-
-  if (hasUsenet) {
-    const { url, filename } = await resolveUsenetMovieStream(imdbId)
-    app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
-    clearFailedPlay(playPath)
-    return { url, filename, provider: 'Usenet' }
-  }
-
-  throw new PlaybackResolutionError(
-    'No stream provider configured',
-    503,
-    { error: 'No stream provider configured', message: 'No Stream Provider' },
-  )
+async function resolveMoviePlayback(imdbId: string, _playbackClient = ''): Promise<PlayResolution> {
+  const movie = getMovieByImdbId(imdbId)
+  if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
+  const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
+  app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
+  return { url, filename, provider: 'Usenet' }
 }
 
 async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: string, playbackClient = ''): Promise<PlayResolution> {
@@ -1704,63 +1688,13 @@ async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: s
   return resolvePlayableStream(streams, `${mediaType} ${externalId}`, playPath, undefined, true)
 }
 
-async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, playbackClient = ''): Promise<PlayResolution> {
-  const playPath = `/play/${imdbId}/${season}/${episodeNumber}`
+async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, _playbackClient = ''): Promise<PlayResolution> {
   const label = `${imdbId} S${season}E${episodeNumber}`
   const show = getShowByImdbId(imdbId)
-  const episode = show
-    ? getEpisodesForSeason(show.tmdbId, season).find(ep => ep.episodeNumber === episodeNumber)
-    : null
-  if (episode && !isEpisodeVisibleToLibrary(episode)) {
-    throw new PlaybackResolutionError(
-      'Episode not yet available',
-      409,
-      { error: 'Episode not yet available', message: 'Not Yet Aired' },
-    )
-  }
-
-  const hasStreamProvider = Boolean(config.sootioUrl) || config.streamProviderUrls.length > 0
-  const hasUsenet = isUsenetConfigured()
-
-  if (hasStreamProvider) {
-    try {
-      const episodeAirYear = episode?.airDate ? Number.parseInt(episode.airDate.slice(0, 4), 10) : undefined
-      const streams = await fetchRankedEpisodeStreams(
-        imdbId,
-        season,
-        episodeNumber,
-        show?.year || undefined,
-        Number.isFinite(episodeAirYear) ? episodeAirYear : undefined,
-        config.preferredAudioLanguage,
-        '',
-        playbackClient,
-        true,
-      )
-      return await resolvePlayableStream(
-        streams,
-        label,
-        playPath,
-        `s${pad2(season)}e${pad2(episodeNumber)}`,
-        true,
-      )
-    } catch (err) {
-      if (!hasUsenet) throw err
-      app.log.info(`play: stream provider failed for ${label}, falling back: ${err}`)
-    }
-  }
-
-  if (hasUsenet) {
-    const { url, filename } = await resolveUsenetEpisodeStream(imdbId, season, episodeNumber)
-    app.log.info(`play: usenet resolved ${filename} for ${label}`)
-    clearFailedPlay(playPath)
-    return { url, filename, provider: 'Usenet' }
-  }
-
-  throw new PlaybackResolutionError(
-    'No stream provider configured',
-    503,
-    { error: 'No stream provider configured', message: 'No Stream Provider' },
-  )
+  if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
+  const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
+  app.log.info(`play: usenet resolved ${filename} for ${label}`)
+  return { url, filename, provider: 'Usenet' }
 }
 
 async function resolvePlaybackCandidate(token: string | undefined, playPath: string): Promise<PlayResolution | null> {
