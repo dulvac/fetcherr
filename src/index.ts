@@ -1582,6 +1582,105 @@ async function buildPlaybackMediaSources(input: {
 
 // ── Usenet streaming endpoint ─────────────────────────────────────────────────
 
+// ── NNTP streaming helpers ──────────────────────────────────────────────────
+
+interface RarVolume {
+  headerBytes: number
+  segments: Array<{ messageId: string; bytes: number; number: number }>
+}
+
+async function writeToReply(
+  reply: { raw: NodeJS.WritableStream & { destroyed?: boolean; once(e: 'drain', fn: () => void): unknown } },
+  data: Buffer,
+): Promise<boolean> {
+  const canContinue = reply.raw.write(data)
+  if (!canContinue) await new Promise<void>(resolve => reply.raw.once('drain', resolve))
+  return !reply.raw.destroyed
+}
+
+async function streamDirectSegments(
+  pool: ReturnType<typeof getNntpPool>,
+  reply: Parameters<typeof writeToReply>[0],
+  segments: Array<{ messageId: string; bytes: number; number: number }>,
+  startSegment: number,
+  startByteWithinSegment: number,
+  itemId: string,
+  log: typeof app.log,
+): Promise<void> {
+  for (let i = startSegment; i < segments.length; i++) {
+    const seg = segments[i]
+    log.info(`usenet: segment ${seg.number}/${segments.length} item ${itemId}`)
+    const body = await pool.fetchArticleBody(seg.messageId)
+    const decoded = ydecode(body)
+    const data = i === startSegment && startByteWithinSegment > 0
+      ? decoded.slice(startByteWithinSegment)
+      : decoded
+    if (!await writeToReply(reply, data)) break
+  }
+}
+
+async function streamRarVolumes(
+  pool: ReturnType<typeof getNntpPool>,
+  reply: Parameters<typeof writeToReply>[0],
+  volumes: RarVolume[],
+  rangeStart: number,
+  log: typeof app.log,
+  itemId: string,
+): Promise<void> {
+  // Build cumulative video-data start offset per volume
+  const volDataStart: number[] = []
+  let cum = 0
+  for (const vol of volumes) {
+    volDataStart.push(cum)
+    const volDecoded = vol.segments.reduce((s, seg) => {
+      const bytes = seg.bytes
+      return s + Math.max(0, Math.floor((bytes - 200) * 128 / 130))
+    }, 0)
+    cum += Math.max(0, volDecoded - vol.headerBytes)
+  }
+
+  // Find starting volume and position
+  let startVol = 0
+  for (let v = volumes.length - 1; v >= 0; v--) {
+    if (volDataStart[v] <= rangeStart) { startVol = v; break }
+  }
+
+  const posInVolData = rangeStart - volDataStart[startVol]
+  const rawPosInVol  = posInVolData + volumes[startVol].headerBytes
+
+  // Find starting segment within startVol
+  const startVolOffsets = buildOffsetTable(volumes[startVol].segments)
+  const startSeg = segmentIndexForOffset(startVolOffsets, rawPosInVol)
+  const startByteWithinSeg = rawPosInVol - startVolOffsets[startSeg]
+
+  for (let vi = startVol; vi < volumes.length; vi++) {
+    const vol = volumes[vi]
+    const isStartVol = vi === startVol
+    const segStart = isStartVol ? startSeg : 0
+
+    for (let si = segStart; si < vol.segments.length; si++) {
+      const seg = vol.segments[si]
+      log.info(`usenet: rar vol ${vi} seg ${si + 1}/${vol.segments.length} item ${itemId}`)
+      const body = await pool.fetchArticleBody(seg.messageId)
+      const decoded = ydecode(body)
+
+      let data: Buffer
+      if (isStartVol && si === startSeg) {
+        data = decoded.slice(startByteWithinSeg)
+      } else if (!isStartVol && si === 0) {
+        // Skip this volume's RAR header
+        data = decoded.length > vol.headerBytes ? decoded.slice(vol.headerBytes) : Buffer.alloc(0)
+      } else {
+        data = decoded
+      }
+
+      if (data.length > 0 && !await writeToReply(reply, data)) return
+    }
+  }
+}
+
+// ── Stream endpoint ─────────────────────────────────────────────────────────
+
 app.get('/usenet/stream/:itemId', async (req, reply) => {
   const { itemId } = req.params as { itemId: string }
   const item = getUsenetItemById(parseInt(itemId, 10))
@@ -1590,53 +1689,36 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
   const ext = item.videoFilename.split('.').pop()?.toLowerCase() ?? 'mkv'
   const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
 
-  const segments = JSON.parse(item.segmentsJson) as Array<{ messageId: string; bytes: number; number: number }>
-  const offsets = buildOffsetTable(segments)
-
   const rangeHeader = (req.headers as Record<string, string | undefined>).range
-  let startSegment = 0
-  let startByteWithinSegment = 0
+  const rangeStart = rangeHeader ? (parseInt(rangeHeader.match(/bytes=(\d+)-/)?.[1] ?? '0', 10) || 0) : 0
 
-  if (rangeHeader) {
-    const rangeMatch = rangeHeader.match(/bytes=(\d+)-/)
-    if (rangeMatch) {
-      const rangeStart = parseInt(rangeMatch[1], 10)
-      startSegment = segmentIndexForOffset(offsets, rangeStart)
-      startByteWithinSegment = rangeStart - offsets[startSegment]
-    }
-  }
-
-  const statusCode = rangeHeader ? 206 : 200
   const headers: Record<string, string> = {
     'Content-Type': contentType,
     'Accept-Ranges': 'bytes',
     'Transfer-Encoding': 'chunked',
     'Cache-Control': 'no-cache',
   }
-  if (rangeHeader && startSegment === 0 && startByteWithinSegment === 0) {
-    headers['Content-Range'] = `bytes 0-*/${item.totalBytes}`
-  } else if (rangeHeader) {
-    const startByte = offsets[startSegment] + startByteWithinSegment
-    headers['Content-Range'] = `bytes ${startByte}-*/${item.totalBytes}`
+  if (rangeHeader) {
+    headers['Content-Range'] = `bytes ${rangeStart}-*/${item.totalBytes}`
   }
 
-  reply.raw.writeHead(statusCode, headers)
+  reply.raw.writeHead(rangeHeader ? 206 : 200, headers)
 
   const pool = getNntpPool()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const replyRaw = reply.raw as any as Parameters<typeof writeToReply>[0]
+
   try {
-    for (let i = startSegment; i < segments.length; i++) {
-      const seg = segments[i]
-      app.log.info(`usenet: streaming segment ${seg.number}/${segments.length} for item ${itemId}`)
-      const body = await pool.fetchArticleBody(seg.messageId)
-      const decoded = ydecode(body)
-      const data = i === startSegment && startByteWithinSegment > 0
-        ? decoded.slice(startByteWithinSegment)
-        : decoded
-      const canContinue = reply.raw.write(data)
-      if (!canContinue) {
-        await new Promise<void>(resolve => reply.raw.once('drain', resolve))
-      }
-      if ((reply.raw as NodeJS.WritableStream & { destroyed?: boolean }).destroyed) break
+    const parsed = JSON.parse(item.segmentsJson) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { type?: string }).type === 'rar') {
+      const { volumes } = parsed as { type: 'rar'; volumes: RarVolume[] }
+      await streamRarVolumes(pool, replyRaw, volumes, rangeStart, app.log, itemId)
+    } else {
+      const segments = parsed as Array<{ messageId: string; bytes: number; number: number }>
+      const offsets = buildOffsetTable(segments)
+      const startSegment = segmentIndexForOffset(offsets, rangeStart)
+      const startByteWithinSegment = rangeStart - offsets[startSegment]
+      await streamDirectSegments(pool, replyRaw, segments, startSegment, startByteWithinSegment, itemId, app.log)
     }
   } catch (err) {
     app.log.warn(`usenet: stream error for item ${itemId}: ${err}`)
