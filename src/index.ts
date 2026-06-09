@@ -79,6 +79,7 @@ getDb()
 // Apply any DB-persisted settings on top of env vars
 {
   const s = getAllSettings()
+  if (s.serverName)         config.serverName          = s.serverName
   if (s.tmdbApiKey)         config.tmdbApiKey          = s.tmdbApiKey
   if (s.tvdbApiKey)         config.tvdbApiKey          = s.tvdbApiKey
   if (s.serverUrl)          config.serverUrl           = s.serverUrl

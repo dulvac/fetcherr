@@ -694,6 +694,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!requireAdmin(req, reply as never)) return
     reply.header('Cache-Control', 'no-store')
     return {
+      serverName:        getSetting('serverName') || config.serverName,
       serverUrl:         config.serverUrl,
       prowlarrUrl:       getSetting('prowlarrUrl') || config.prowlarrUrl,
       hasProwlarrApiKey: !!(getSetting('prowlarrApiKey') || config.prowlarrApiKey),
@@ -788,7 +789,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as Record<string, string | string[] | boolean | number>
     const editable: (keyof typeof config)[] = [
-      'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret', 'mdblistApiKey',
+      'serverName', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret', 'mdblistApiKey',
     ]
     for (const key of editable) {
       if (typeof body[key] === 'string') {

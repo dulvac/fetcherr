@@ -165,8 +165,13 @@
   <section class="section" id="server">
     <div class="section-title">Server</div>
     <div class="field">
+      <label for="serverName">Server Name</label>
+      <input id="serverName" type="text" placeholder="Fetcherr Usenet">
+      <div class="field-note">Library name shown in Infuse and VidHub.</div>
+    </div>
+    <div class="field">
       <label for="serverUrl">Server URL</label>
-      <input id="serverUrl" type="url" placeholder="http://your-server:9990">
+      <input id="serverUrl" type="url" placeholder="http://your-server:9991">
       <div class="field-note">External URL used for playback redirects to clients.</div>
     </div>
   </section>
@@ -703,6 +708,7 @@
     nntpPassBadge.textContent = hasStoredNntpPass ? 'Saved' : ''
     setSecretPlaceholder('tmdbApiKey', hasStoredTmdbApiKey, 'Enter your TMDB API key')
     setSecretPlaceholder('tvdbApiKey', hasStoredTvdbApiKey, 'Enter your TVDB API key')
+    document.getElementById('serverName').value        = d.serverName        || ''
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
     document.getElementById('showAddDefaultMode').value = d.showAddDefaultMode || 'all'
     document.getElementById('movieReleaseMode').value = d.movieReleaseMode || 'digital'
@@ -1154,6 +1160,7 @@
     const traktClientSecret = document.getElementById('traktClientSecret').value
     const mdblistApiKey = document.getElementById('mdblistApiKey').value
     const body = {
+      serverName:        document.getElementById('serverName').value,
       prowlarrUrl:       document.getElementById('prowlarrUrl').value,
       nntpHost:          document.getElementById('nntpHost').value,
       nntpPort:          document.getElementById('nntpPort').value,
