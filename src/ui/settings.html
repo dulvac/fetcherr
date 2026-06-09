@@ -48,8 +48,7 @@
 
   <div class="settings-layout">
     <aside class="settings-nav" aria-label="Settings sections">
-      <a href="#streams">Streams</a>
-      <a href="#debrid">Debrid</a>
+      <a href="#usenet">Usenet</a>
       <a href="#metadata">Metadata</a>
       <a href="#users">Users</a>
       <a href="#server">Server</a>
@@ -59,112 +58,68 @@
     </aside>
     <main class="settings-content">
 
-  <!-- Stream Add-ons -->
-  <section class="section" id="streams">
-    <div class="section-title">Stream Add-ons</div>
-    <div class="field">
-      <label for="streamProviderList">Add-ons</label>
-      <div id="streamProviderList" class="provider-list"></div>
-      <div class="provider-actions">
-        <button type="button" class="btn btn-sm" onclick="addProviderRow()">+ Add Add-on</button>
+  <!-- Prowlarr -->
+  <section class="section" id="usenet">
+    <div class="section-title">Prowlarr</div>
+    <div class="field-grid field">
+      <div class="field">
+        <label for="prowlarrUrl">URL</label>
+        <input id="prowlarrUrl" type="url" placeholder="http://prowlarr:9696">
+        <div class="field-note">Prowlarr base URL (no trailing slash).</div>
       </div>
-      <div class="field-note">One Stremio add-on manifest or base URL per row.</div>
-    </div>
-    <div class="field">
-      <label for="preferredAudioLanguage">Preferred Audio Language</label>
-      <select id="preferredAudioLanguage">
-        <option value="en">English</option>
-        <option value="ja">Japanese</option>
-        <option value="es">Spanish</option>
-        <option value="fr">French</option>
-        <option value="de">German</option>
-        <option value="it">Italian</option>
-        <option value="ko">Korean</option>
-        <option value="zh">Chinese</option>
-        <option value="pt">Portuguese</option>
-        <option value="ru">Russian</option>
-        <option value="hi">Hindi</option>
-        <option value="ar">Arabic</option>
-      </select>
-      <div class="field-note">Used for stream ranking and ffprobe checks when provider metadata is ambiguous.</div>
-    </div>
-    <div class="field">
-      <label for="englishStreamMode">Audio Match Mode</label>
-      <select id="englishStreamMode">
-        <option value="prefer">Prefer selected language when available</option>
-        <option value="require">Require selected language audio</option>
-        <option value="off">Do not rank by language markers</option>
-      </select>
-      <div class="field-note">Prefer ranks by provider metadata. Require runs ffprobe before playback.</div>
-    </div>
-    <div class="field">
-      <label for="streamRankingMode">Stream Ranking</label>
-      <select id="streamRankingMode">
-        <option value="fetcherr">Fetcherr — rank by quality, cache status, and language</option>
-        <option value="provider">Provider order — use add-on results as-is</option>
-      </select>
-      <div class="field-note">Use Provider order when your add-on already ranks streams correctly.</div>
-    </div>
-    <label class="check-item field" for="mediaSourceSelection">
-      <input id="mediaSourceSelection" type="checkbox" onchange="syncMediaSourceLimitVisibility()">
-      <div class="check-meta">
-        <div class="check-title">Media source selection</div>
-        <div class="check-slug">Shows cached stream options for movie and episode playback.</div>
+      <div class="field">
+        <label for="prowlarrApiKey">API Key <span id="prowlarrConfigState" class="config-state" hidden></span></label>
+        <div class="input-row">
+          <input id="prowlarrApiKey" type="password" placeholder="Enter Prowlarr API key" oninput="onApiKeyInput('prowlarr')">
+          <button id="prowlarrValidateBtn" class="btn btn-sm" onclick="validateProwlarr()" hidden>Test</button>
+          <button id="prowlarrClearBtn" class="btn btn-sm btn-danger" onclick="toggleClearApiKey('prowlarr')" hidden>Clear</button>
+        </div>
       </div>
-    </label>
-    <div class="field" id="mediaSourceLimitField" hidden>
-      <label for="mediaSourceLimit">Sources Offered</label>
-      <select id="mediaSourceLimit">
-        <option value="10">10 sources</option>
-        <option value="5">5 sources</option>
-      </select>
-      <div class="field-note">Versions are ordered by estimated Mbps.</div>
-    </div>
-    <label class="check-item field" for="stremioSearchEnabled">
-      <input id="stremioSearchEnabled" type="checkbox" onchange="syncStremioSearchSourceVisibility()">
-      <div class="check-meta">
-        <div class="check-title">Stremio search</div>
-        <div class="check-slug">Include external Stremio, Trakt, or add-on results for users who also have Stremio Search enabled below.</div>
-      </div>
-    </label>
-    <div class="field" id="stremioSearchSourceField" hidden>
-      <label for="stremioSearchSource">Search source</label>
-      <select id="stremioSearchSource">
-        <option value="cinemeta">Cinemeta — Stremio public catalog, no setup needed</option>
-        <option value="trakt">Trakt — uses Trakt API (requires Trakt setup)</option>
-        <option value="addon">Add-on catalog — uses your configured stream add-ons</option>
-      </select>
     </div>
   </section>
 
-  <!-- Debrid -->
-  <section class="section" id="debrid">
-    <div class="section-title">Debrid</div>
+  <!-- NNTP Provider -->
+  <section class="section">
+    <div class="section-title">NNTP Provider</div>
     <div class="field-grid field">
       <div class="field">
-        <label for="rdApiKey">Real-Debrid API Key <span id="rdConfigState" class="config-state" hidden></span></label>
-        <div class="input-row">
-          <input id="rdApiKey" type="password" placeholder="Enter your Real-Debrid API key" oninput="onApiKeyInput('rd')">
-          <button id="rdValidateBtn" class="btn btn-sm" onclick="validateRD()" hidden>Validate</button>
-          <button id="rdClearBtn" class="btn btn-sm btn-danger" onclick="toggleClearApiKey('rd')" hidden>Clear</button>
-        </div>
+        <label for="nntpHost">Host</label>
+        <input id="nntpHost" type="text" placeholder="news.newshosting.com">
       </div>
       <div class="field">
-        <label for="torBoxApiKey">TorBox API Key <span id="tbConfigState" class="config-state" hidden></span></label>
+        <label for="nntpPort">Port</label>
+        <input id="nntpPort" type="number" placeholder="563" min="1" max="65535">
+      </div>
+    </div>
+    <div class="field-grid field">
+      <div class="field">
+        <label for="nntpUser">Username</label>
+        <input id="nntpUser" type="text" placeholder="NNTP username" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="nntpPass">Password <span id="nntpPassState" class="config-state" hidden></span></label>
         <div class="input-row">
-          <input id="torBoxApiKey" type="password" placeholder="Enter your TorBox API key" oninput="onApiKeyInput('tb')">
-          <button id="tbValidateBtn" class="btn btn-sm" onclick="validateTorBox()" hidden>Validate</button>
-          <button id="tbClearBtn" class="btn btn-sm btn-danger" onclick="toggleClearApiKey('tb')" hidden>Clear</button>
+          <input id="nntpPass" type="password" placeholder="Enter NNTP password" autocomplete="current-password" oninput="onNntpPassInput()">
+          <button id="nntpPassClearBtn" class="btn btn-sm btn-danger" onclick="toggleClearNntpPass()" hidden>Clear</button>
         </div>
       </div>
     </div>
-    <label class="check-item field" for="torBoxCleanupEnabled">
-      <input id="torBoxCleanupEnabled" type="checkbox" checked>
-      <div class="check-meta">
-        <div class="check-title">Clean up TorBox library after playback</div>
-        <div class="check-slug">Deletes TorBox torrents after playback has been idle.</div>
+    <div class="field-grid field">
+      <div class="field">
+        <label for="nntpConnections">Connections</label>
+        <input id="nntpConnections" type="number" placeholder="10" min="1" max="50">
+        <div class="field-note">Parallel NNTP connections for streaming. 10–20 recommended.</div>
       </div>
-    </label>
+      <div class="field">
+        <label class="check-item" for="nntpSsl" style="margin-top:0.5rem">
+          <input id="nntpSsl" type="checkbox" checked>
+          <div class="check-meta">
+            <div class="check-title">SSL/TLS</div>
+            <div class="check-slug">Use encrypted NNTP connection (port 563).</div>
+          </div>
+        </label>
+      </div>
+    </div>
   </section>
 
   <!-- TMDB -->
@@ -419,26 +374,6 @@
   </div>
 </div>
 
-<div class="modal-backdrop" id="addonRemoveModalBackdrop" onclick="closeAddonRemoveModal(event)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-head">
-      <div>
-        <h2 class="modal-title">Remove Add-on?</h2>
-        <p class="modal-sub">Removing this add-on stops Fetcherr from searching it for streams. Media that only resolves through this provider may become unplayable until another add-on can serve it.</p>
-      </div>
-      <button type="button" class="icon-btn" onclick="closeAddonRemoveModal()" aria-label="Close">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 6L6 18M6 6l12 12"/>
-        </svg>
-      </button>
-    </div>
-    <div class="addon-remove-summary" id="addonRemoveSummary"></div>
-    <div class="modal-actions">
-      <button type="button" class="btn" onclick="closeAddonRemoveModal()">Cancel</button>
-      <button type="button" class="btn btn-danger" id="confirmAddonRemoveBtn" onclick="confirmProviderRemove()">Remove Add-on</button>
-    </div>
-  </div>
-</div>
 
 <script>
   let selectedTraktLists = []
@@ -447,10 +382,10 @@
   let traktAuthPending = false
   let traktAuthPollId = null
   let traktAuthTimeoutId = null
-  let hasStoredRdApiKey = false
-  let hasStoredTorBoxApiKey = false
-  let clearRdApiKey = false
-  let clearTorBoxApiKey = false
+  let hasStoredProwlarrApiKey = false
+  let clearProwlarrApiKey = false
+  let hasStoredNntpPass = false
+  let clearNntpPass = false
   let hasStoredTmdbApiKey = false
   let hasStoredTvdbApiKey = false
   let hasStoredTraktClientSecret = false
@@ -459,7 +394,6 @@
   let deletedUserIds = new Set()
   let userModalMode = 'create'
   let userModalTargetId = null
-  let pendingProviderRemoveBtn = null
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -470,173 +404,47 @@
       .replace(/'/g, '&#39;')
   }
 
-  function providerPlaceholder(idx) {
-    return idx === 0
-      ? 'https://torrentio.strem.fun/realdebrid=...'
-      : 'https://addon.debridio.com/...'
-  }
-
-  function providerMoveButtonHtml(dir) {
-    const isUp = dir === 'up'
-    return `
-      <button type="button" class="btn-icon provider-move-btn provider-move-${dir}" title="${isUp ? 'Move add-on up' : 'Move add-on down'}" aria-label="${isUp ? 'Move add-on up' : 'Move add-on down'}" onclick="moveProviderRow(this, ${isUp ? -1 : 1})">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          ${isUp ? '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>' : '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>'}
-        </svg>
-      </button>
-    `
-  }
-
-  function collectProviderUrls() {
-    return [...document.querySelectorAll('.provider-url-input')]
-      .map(el => el.value.trim())
-      .filter(Boolean)
-  }
-
-  function uniqueProviderUrls(urls) {
-    const seen = new Set()
-    const result = []
-    for (const url of urls.map(v => String(v || '').trim()).filter(Boolean)) {
-      if (seen.has(url)) continue
-      seen.add(url)
-      result.push(url)
-    }
-    return result
-  }
-
-  function providerRemoveButtonHtml() {
-    return `
-      <button type="button" class="btn-remove provider-remove-btn" title="Remove add-on" aria-label="Remove add-on" onclick="promptRemoveProviderRow(this)">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-          <path d="M18 6L6 18M6 6l12 12"/>
-        </svg>
-      </button>
-    `
-  }
-
-  function renderProviderRows(urls = []) {
-    const list = document.getElementById('streamProviderList')
-    const values = urls.length ? urls : ['']
-    list.innerHTML = values.map((url, idx) => `
-      <div class="provider-row">
-        <input class="provider-url-input" type="url" placeholder="${providerPlaceholder(idx)}" value="${url.replace(/"/g, '&quot;')}">
-        <div class="provider-row-actions">
-          <button type="button" class="btn-icon provider-move-btn provider-move-up" title="Move add-on up" aria-label="Move add-on up" onclick="moveProviderRow(this, -1)">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>
-            </svg>
-          </button>
-          <button type="button" class="btn-icon provider-move-btn provider-move-down" title="Move add-on down" aria-label="Move add-on down" onclick="moveProviderRow(this, 1)">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>
-            </svg>
-          </button>
-          ${providerRemoveButtonHtml()}
-        </div>
-      </div>
-    `).join('')
-    syncProviderRowControls()
-  }
-
-  function addProviderRow(value = '') {
-    const list = document.getElementById('streamProviderList')
-    const row = document.createElement('div')
-    row.className = 'provider-row'
-    const idx = list.children.length
-    row.innerHTML = `
-      <input class="provider-url-input" type="url" placeholder="${providerPlaceholder(idx)}" value="${value.replace(/"/g, '&quot;')}">
-      <div class="provider-row-actions">
-        <button type="button" class="btn-icon provider-move-btn provider-move-up" title="Move add-on up" aria-label="Move add-on up" onclick="moveProviderRow(this, -1)">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>
-          </svg>
-        </button>
-        <button type="button" class="btn-icon provider-move-btn provider-move-down" title="Move add-on down" aria-label="Move add-on down" onclick="moveProviderRow(this, 1)">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>
-          </svg>
-        </button>
-        ${providerRemoveButtonHtml()}
-      </div>
-    `
-    list.appendChild(row)
-    syncProviderRowControls()
-    _markDirty()
-    row.querySelector('.provider-url-input')?.focus()
-  }
-
-  function promptRemoveProviderRow(btn) {
-    const row = btn.closest('.provider-row')
-    const input = row?.querySelector('.provider-url-input')
-    const value = input?.value.trim() || ''
-    if (!value) {
-      removeProviderRow(btn)
-      return
-    }
-
-    pendingProviderRemoveBtn = btn
-    document.getElementById('addonRemoveSummary').textContent = value
-    document.getElementById('addonRemoveModalBackdrop').classList.add('open')
-    document.addEventListener('keydown', onAddonRemoveModalKey)
-    document.getElementById('confirmAddonRemoveBtn').focus()
-  }
-
-  function removeProviderRow(btn) {
-    const list = document.getElementById('streamProviderList')
-    btn.closest('.provider-row')?.remove()
-    if (!list.children.length) renderProviderRows([''])
-    else syncProviderRowControls()
-    _markDirty()
-  }
-
-  function moveProviderRow(btn, delta) {
-    const row = btn.closest('.provider-row')
-    const list = document.getElementById('streamProviderList')
-    if (!row || !list) return
-    const rows = [...list.querySelectorAll('.provider-row')]
-    const idx = rows.indexOf(row)
-    const nextIdx = idx + delta
-    if (nextIdx < 0 || nextIdx >= rows.length) return
-
-    if (delta < 0) {
-      list.insertBefore(row, rows[nextIdx])
+  function onNntpPassInput() {
+    clearNntpPass = false
+    const input = document.getElementById('nntpPass')
+    const clearBtn = document.getElementById('nntpPassClearBtn')
+    const badge = document.getElementById('nntpPassState')
+    const hasNewValue = input.value.trim().length > 0
+    clearBtn.hidden = !hasStoredNntpPass
+    badge.hidden = !hasNewValue && !hasStoredNntpPass
+    if (hasNewValue) {
+      badge.className = 'config-state pending'
+      badge.textContent = 'Unsaved'
+    } else if (hasStoredNntpPass) {
+      badge.className = 'config-state ok'
+      badge.textContent = 'Saved'
     } else {
-      const nextRow = rows[nextIdx]
-      list.insertBefore(nextRow, row)
+      badge.className = 'config-state'
+      badge.textContent = ''
     }
-
-    syncProviderRowControls()
-    _markDirty()
-    row.querySelector('.provider-url-input')?.focus()
   }
 
-  function syncProviderRowControls() {
-    const rows = [...document.querySelectorAll('#streamProviderList .provider-row')]
-    rows.forEach((row, idx) => {
-      const up = row.querySelector('.provider-move-up')
-      const down = row.querySelector('.provider-move-down')
-      if (up) up.disabled = idx === 0
-      if (down) down.disabled = idx === rows.length - 1
-    })
-  }
-
-  function closeAddonRemoveModal(event) {
-    if (event && event.target !== event.currentTarget) return
-    document.getElementById('addonRemoveModalBackdrop').classList.remove('open')
-    document.removeEventListener('keydown', onAddonRemoveModalKey)
-    pendingProviderRemoveBtn = null
-  }
-
-  function onAddonRemoveModalKey(event) {
-    if (event.key === 'Escape') closeAddonRemoveModal()
-  }
-
-  function confirmProviderRemove() {
-    if (pendingProviderRemoveBtn) {
-      removeProviderRow(pendingProviderRemoveBtn)
-      showOut('Add-on removed. Save settings to apply the change.', 'info')
+  function toggleClearNntpPass() {
+    clearNntpPass = !clearNntpPass
+    const input = document.getElementById('nntpPass')
+    const clearBtn = document.getElementById('nntpPassClearBtn')
+    const badge = document.getElementById('nntpPassState')
+    if (clearNntpPass) {
+      input.value = ''
+      input.disabled = true
+      input.placeholder = 'NNTP password will be removed on save'
+      clearBtn.textContent = 'Undo'
+      badge.hidden = false
+      badge.className = 'config-state pending'
+      badge.textContent = 'Will Clear'
+    } else {
+      input.disabled = false
+      input.placeholder = '•••••••• saved on server'
+      clearBtn.textContent = 'Clear'
+      badge.hidden = false
+      badge.className = 'config-state ok'
+      badge.textContent = 'Saved'
     }
-    closeAddonRemoveModal()
   }
 
   function setPill(id, text, kind = '') {
@@ -653,17 +461,6 @@
     el.textContent = msg
   }
 
-  function syncMediaSourceLimitVisibility() {
-    const enabled = document.getElementById('mediaSourceSelection').checked
-    document.getElementById('mediaSourceLimitField').hidden = !enabled
-  }
-
-  function syncStremioSearchSourceVisibility() {
-    const enabled = document.getElementById('stremioSearchEnabled').checked
-    document.getElementById('stremioSearchSourceField').hidden = !enabled
-    renderUsers()
-  }
-
   function setSecretPlaceholder(id, hasStored, emptyPlaceholder) {
     const input = document.getElementById(id)
     input.value = ''
@@ -671,25 +468,15 @@
   }
 
   const apiCredentialUi = {
-    rd: {
-      inputId: 'rdApiKey',
-      buttonId: 'rdValidateBtn',
-      clearButtonId: 'rdClearBtn',
-      badgeId: 'rdConfigState',
-      label: 'Real-Debrid',
-      hasStored: () => hasStoredRdApiKey,
-      isClearRequested: () => clearRdApiKey,
-      setClearRequested: value => { clearRdApiKey = value },
-    },
-    tb: {
-      inputId: 'torBoxApiKey',
-      buttonId: 'tbValidateBtn',
-      clearButtonId: 'tbClearBtn',
-      badgeId: 'tbConfigState',
-      label: 'TorBox',
-      hasStored: () => hasStoredTorBoxApiKey,
-      isClearRequested: () => clearTorBoxApiKey,
-      setClearRequested: value => { clearTorBoxApiKey = value },
+    prowlarr: {
+      inputId: 'prowlarrApiKey',
+      buttonId: 'prowlarrValidateBtn',
+      clearButtonId: 'prowlarrClearBtn',
+      badgeId: 'prowlarrConfigState',
+      label: 'Prowlarr',
+      hasStored: () => hasStoredProwlarrApiKey,
+      isClearRequested: () => clearProwlarrApiKey,
+      setClearRequested: value => { clearProwlarrApiKey = value },
     },
     tmdb: {
       inputId: 'tmdbApiKey',
@@ -887,28 +674,33 @@
     const res = await fetch('/ui/settings-data', { cache: 'no-store' })
     if (!res.ok) return
     const d = await res.json()
-    hasStoredRdApiKey = !!d.hasRdApiKey
-    hasStoredTorBoxApiKey = !!d.hasTorBoxApiKey
-    clearRdApiKey = false
-    clearTorBoxApiKey = false
+    hasStoredProwlarrApiKey = !!d.hasProwlarrApiKey
+    clearProwlarrApiKey = false
+    hasStoredNntpPass = !!d.hasNntpPass
+    clearNntpPass = false
     hasStoredTmdbApiKey = !!d.hasTmdbApiKey
     hasStoredTvdbApiKey = !!d.hasTvdbApiKey
     hasStoredTraktClientSecret = !!d.hasTraktClientSecret
     hasStoredMdblistApiKey = !!d.hasMdblistApiKey
-    let streamProviderUrls = uniqueProviderUrls((d.streamProviderUrls || '').split('\n'))
-    const legacyAddonUrl = String(d.sootioUrl || '').trim()
-    if (legacyAddonUrl) streamProviderUrls = uniqueProviderUrls([legacyAddonUrl, ...streamProviderUrls])
-    document.getElementById('preferredAudioLanguage').value = d.preferredAudioLanguage || 'en'
-    document.getElementById('englishStreamMode').value = d.englishStreamMode || 'prefer'
-    document.getElementById('streamRankingMode').value = d.streamRankingMode || 'fetcherr'
-    document.getElementById('mediaSourceSelection').checked = d.mediaSourceSelection === true
-    document.getElementById('stremioSearchEnabled').checked = d.stremioSearchEnabled === true
-    document.getElementById('stremioSearchSource').value = d.stremioSearchSource || 'cinemeta'
-    syncStremioSearchSourceVisibility()
-    document.getElementById('mediaSourceLimit').value = String(d.mediaSourceLimit === 5 ? 5 : 10)
-    syncMediaSourceLimitVisibility()
-    setSecretPlaceholder('rdApiKey', hasStoredRdApiKey, 'Enter your Real-Debrid API key')
-    setSecretPlaceholder('torBoxApiKey', hasStoredTorBoxApiKey, 'Enter your TorBox API key')
+    document.getElementById('prowlarrUrl').value = d.prowlarrUrl || ''
+    setSecretPlaceholder('prowlarrApiKey', hasStoredProwlarrApiKey, 'Enter Prowlarr API key')
+    document.getElementById('nntpHost').value = d.nntpHost || ''
+    document.getElementById('nntpPort').value = d.nntpPort || '563'
+    document.getElementById('nntpUser').value = d.nntpUser || ''
+    document.getElementById('nntpSsl').checked = d.nntpSsl !== false
+    document.getElementById('nntpConnections').value = d.nntpConnections || '10'
+    // NNTP password
+    const nntpPassInput = document.getElementById('nntpPass')
+    const nntpPassClearBtn = document.getElementById('nntpPassClearBtn')
+    const nntpPassBadge = document.getElementById('nntpPassState')
+    nntpPassInput.value = ''
+    nntpPassInput.disabled = false
+    nntpPassInput.placeholder = hasStoredNntpPass ? '•••••••• saved on server' : 'Enter NNTP password'
+    nntpPassClearBtn.hidden = !hasStoredNntpPass
+    nntpPassClearBtn.textContent = 'Clear'
+    nntpPassBadge.hidden = !hasStoredNntpPass
+    nntpPassBadge.className = 'config-state ok'
+    nntpPassBadge.textContent = hasStoredNntpPass ? 'Saved' : ''
     setSecretPlaceholder('tmdbApiKey', hasStoredTmdbApiKey, 'Enter your TMDB API key')
     setSecretPlaceholder('tvdbApiKey', hasStoredTvdbApiKey, 'Enter your TVDB API key')
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
@@ -920,7 +712,6 @@
     document.getElementById('traktWatchlistShows').checked = d.traktWatchlistShows !== false
     document.getElementById('traktWatchHistory').checked = d.traktWatchHistory === true
     document.getElementById('traktListDisplay').value = d.traktFolders ? 'folders' : d.traktCollections ? 'collections' : 'off'
-    document.getElementById('torBoxCleanupEnabled').checked = d.torBoxCleanupEnabled !== false
     setSecretPlaceholder('mdblistApiKey', hasStoredMdblistApiKey, 'Enter your MDBList API key')
     document.getElementById('mdblistFolders').checked = d.mdblistFolders === true
     mdblistEntries = Array.isArray(d.mdblistLists) ? d.mdblistLists : []
@@ -930,9 +721,7 @@
     deletedUserIds = new Set()
     renderUsers()
 
-    renderProviderRows(streamProviderUrls)
-    setApiStoredStatus('rd')
-    setApiStoredStatus('tb')
+    setApiStoredStatus('prowlarr')
     setApiStoredStatus('tmdb')
     setApiStoredStatus('tvdb')
     setMdblistStoredStatus()
@@ -993,7 +782,6 @@
       </div>`
       return
     }
-    const stremioSearchGlobalEnabled = document.getElementById('stremioSearchEnabled').checked
     el.innerHTML = `
       <table class="user-table">
         <thead>
@@ -1001,7 +789,6 @@
             <th>Username</th>
             <th>Role</th>
             <th>Ratings Limit</th>
-            <th>Stremio Search</th>
             <th>Password</th>
             <th>Actions</th>
           </tr>
@@ -1022,11 +809,6 @@
                 <select class="rating-limit-select" ${user.deleted || user.role === 'admin' ? 'disabled' : ''} onchange="updateUserField('${user.id}', 'maxRating', this.value)">
                   ${ratingLimitOptions(user.role === 'admin' ? 'unrestricted' : user.maxRating)}
                 </select>
-              </td>
-              <td data-label="Stremio Search">
-                <label class="inline-check ${stremioSearchGlobalEnabled ? '' : 'disabled'}">
-                  <input type="checkbox" aria-label="Stremio Search" ${user.searchEnabled ? 'checked' : ''} ${user.deleted || !stremioSearchGlobalEnabled ? 'disabled' : ''} onchange="updateUserField('${user.id}', 'searchEnabled', this.checked)">
-                </label>
               </td>
               <td data-label="Password">
                 <div class="user-actions">
@@ -1270,12 +1052,30 @@
     }
   }
 
-  async function validateRD() {
-    await validateApiKey('rd')
-  }
-
-  async function validateTorBox() {
-    await validateApiKey('tb')
+  async function validateProwlarr() {
+    const prowlarrUrl = document.getElementById('prowlarrUrl').value.trim()
+    const body = { service: 'prowlarr', value: document.getElementById('prowlarrApiKey').value.trim() }
+    if (prowlarrUrl) body.prowlarrUrl = prowlarrUrl
+    const cfg = apiCredentialUi['prowlarr']
+    const button = document.getElementById(cfg.buttonId)
+    button.disabled = true
+    setConfigStateBadge('prowlarr', 'Checking', 'pending')
+    const res = await fetch('/ui/settings-data/validate-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const d = await res.json().catch(() => ({}))
+    button.disabled = false
+    if (res.ok) {
+      button.hidden = true
+      setConfigStateBadge('prowlarr', 'Connected', 'ok')
+      showOut(d.label || 'Prowlarr connected.', 'success')
+    } else {
+      button.hidden = false
+      setConfigStateBadge('prowlarr', 'Failed', 'err')
+      showOut(d.error || 'Prowlarr connection failed.', 'error')
+    }
   }
 
   async function validateTMDB() {
@@ -1347,22 +1147,19 @@
   }
 
   async function saveSettings() {
-    const rdApiKey = document.getElementById('rdApiKey').value
-    const torBoxApiKey = document.getElementById('torBoxApiKey').value
+    const prowlarrApiKey = document.getElementById('prowlarrApiKey').value
+    const nntpPassValue = document.getElementById('nntpPass').value
     const tmdbApiKey = document.getElementById('tmdbApiKey').value
     const tvdbApiKey = document.getElementById('tvdbApiKey').value
     const traktClientSecret = document.getElementById('traktClientSecret').value
     const mdblistApiKey = document.getElementById('mdblistApiKey').value
     const body = {
-      sootioUrl:         '',
-      streamProviderUrls: collectProviderUrls().join('\n'),
-      preferredAudioLanguage: document.getElementById('preferredAudioLanguage').value,
-      englishStreamMode: document.getElementById('englishStreamMode').value,
-      streamRankingMode: document.getElementById('streamRankingMode').value,
-      mediaSourceSelection: document.getElementById('mediaSourceSelection').checked,
-      stremioSearchEnabled: document.getElementById('stremioSearchEnabled').checked,
-      stremioSearchSource: document.getElementById('stremioSearchSource').value,
-      mediaSourceLimit: document.getElementById('mediaSourceLimit').value,
+      prowlarrUrl:       document.getElementById('prowlarrUrl').value,
+      nntpHost:          document.getElementById('nntpHost').value,
+      nntpPort:          document.getElementById('nntpPort').value,
+      nntpUser:          document.getElementById('nntpUser').value,
+      nntpSsl:           document.getElementById('nntpSsl').checked,
+      nntpConnections:   document.getElementById('nntpConnections').value,
       serverUrl:         document.getElementById('serverUrl').value,
       showAddDefaultMode: document.getElementById('showAddDefaultMode').value,
       movieReleaseMode: document.getElementById('movieReleaseMode').value,
@@ -1372,14 +1169,13 @@
       traktWatchHistory: document.getElementById('traktWatchHistory').checked,
       traktCollections: document.getElementById('traktListDisplay').value === 'collections',
       traktFolders: document.getElementById('traktListDisplay').value === 'folders',
-      torBoxCleanupEnabled: document.getElementById('torBoxCleanupEnabled').checked,
       traktLists:        selectedTraktLists,
       mdblistFolders: document.getElementById('mdblistFolders').checked,
       mdblistLists: mdblistEntries,
-      ...(rdApiKey ? { rdApiKey } : {}),
-      ...(torBoxApiKey ? { torBoxApiKey } : {}),
-      ...(clearRdApiKey ? { rdApiKey: '' } : {}),
-      ...(clearTorBoxApiKey ? { torBoxApiKey: '' } : {}),
+      ...(prowlarrApiKey ? { prowlarrApiKey } : {}),
+      ...(clearProwlarrApiKey ? { prowlarrApiKey: '' } : {}),
+      ...(nntpPassValue ? { nntpPass: nntpPassValue } : {}),
+      ...(clearNntpPass ? { nntpPass: '' } : {}),
       ...(tmdbApiKey ? { tmdbApiKey } : {}),
       ...(tvdbApiKey ? { tvdbApiKey } : {}),
       ...(traktClientSecret ? { traktClientSecret } : {}),
@@ -1500,7 +1296,6 @@
     }
   }
 
-  renderProviderRows([''])
   checkAuth()
   loadSettings().then(() => {
     _settingsLoaded = true

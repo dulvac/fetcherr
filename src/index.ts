@@ -79,10 +79,6 @@ getDb()
 // Apply any DB-persisted settings on top of env vars
 {
   const s = getAllSettings()
-  if (s.sootioUrl)          config.sootioUrl          = normalizeSootioUrl(s.sootioUrl)
-  if (s.rdApiKey)           config.rdApiKey            = s.rdApiKey
-  if (s.torBoxApiKey)       config.torBoxApiKey        = s.torBoxApiKey
-  if (s.torBoxUserIp)       config.torBoxUserIp        = s.torBoxUserIp
   if (s.tmdbApiKey)         config.tmdbApiKey          = s.tmdbApiKey
   if (s.tvdbApiKey)         config.tvdbApiKey          = s.tvdbApiKey
   if (s.serverUrl)          config.serverUrl           = s.serverUrl
@@ -99,41 +95,14 @@ getDb()
   if (s.mdblistFolders != null) config.mdblistFolders = parseBooleanSetting(s.mdblistFolders, false)
   if (s.showAddDefaultMode != null) config.showAddDefaultMode = parseShowAddDefaultMode(s.showAddDefaultMode)
   if (s.movieReleaseMode != null) config.movieReleaseMode = parseMovieReleaseMode(s.movieReleaseMode)
-  if (s.musicAddonUrls != null) config.musicAddonUrls = parseMusicAddonUrls(s.musicAddonUrls)
-  if (s.preferredAudioLanguage != null) config.preferredAudioLanguage = parseAudioLanguage(s.preferredAudioLanguage)
-  if (s.englishStreamMode != null) config.englishStreamMode = parseEnglishStreamMode(s.englishStreamMode)
-  if (s.streamRankingMode != null) config.streamRankingMode = parseStreamRankingMode(s.streamRankingMode)
-  if (s.stremioSearchEnabled != null) config.stremioSearchEnabled = parseBooleanSetting(s.stremioSearchEnabled, false)
-  if (s.stremioSearchSource != null) config.stremioSearchSource = parseStremioSearchSource(s.stremioSearchSource)
-  if (s.mediaSourceSelection != null) config.mediaSourceSelection = parseBooleanSetting(s.mediaSourceSelection, false)
-  if (s.mediaSourceLimit != null) config.mediaSourceLimit = parseMediaSourceLimit(s.mediaSourceLimit)
-  const bothConfigured = Boolean(config.rdApiKey && config.torBoxApiKey)
-  if (bothConfigured) {
-    config.streamProviderUrls = collectStreamProviderUrls(
-      s.rdStreamProviderUrls ?? '',
-      s.torBoxStreamProviderUrls ?? '',
-      s.streamProviderUrls ?? '',
-    )
-  } else if (config.torBoxApiKey) {
-    config.streamProviderUrls = collectStreamProviderUrls(
-      s.torBoxStreamProviderUrls ?? '',
-      s.streamProviderUrls ?? '',
-      config.streamProviderUrls.join('\n'),
-    )
-  } else {
-    config.streamProviderUrls = collectStreamProviderUrls(
-      s.rdStreamProviderUrls ?? '',
-      s.streamProviderUrls ?? '',
-      config.streamProviderUrls.join('\n'),
-    )
-  }
-  config.stremioSearchProviderUrls = collectStreamProviderUrls(
-    s.rdStreamProviderUrls ?? '',
-    s.torBoxStreamProviderUrls ?? '',
-    s.streamProviderUrls ?? '',
-    config.streamProviderUrls.join('\n'),
-    config.sootioUrl,
-  )
+  if (s.prowlarrUrl)         config.prowlarrUrl         = s.prowlarrUrl
+  if (s.prowlarrApiKey)      config.prowlarrApiKey      = s.prowlarrApiKey
+  if (s.nntpHost)            config.nntpHost            = s.nntpHost
+  if (s.nntpPort != null)    config.nntpPort            = parseInt(s.nntpPort, 10) || config.nntpPort
+  if (s.nntpUser)            config.nntpUser            = s.nntpUser
+  if (s.nntpPass)            config.nntpPass            = s.nntpPass
+  if (s.nntpSsl != null)     config.nntpSsl             = parseBooleanSetting(s.nntpSsl, true)
+  if (s.nntpConnections != null) config.nntpConnections = parseInt(s.nntpConnections, 10) || config.nntpConnections
 }
 
 rehydrateTorBoxCleanupJobs()

@@ -96,7 +96,7 @@ const STATIC_MIME: Record<string, string> = {
   css: 'text/css',
 }
 
-type ApiKeyService = 'rd' | 'tmdb' | 'tvdb' | 'tb'
+type ApiKeyService = 'tmdb' | 'tvdb' | 'prowlarr'
 type LibraryStatusFilter = 'all' | 'available' | 'pending' | 'hidden' | 'manual' | 'list'
 
 interface TvdbValidationResponse {
@@ -106,44 +106,32 @@ interface TvdbValidationResponse {
 }
 
 function apiKeyServiceLabel(service: ApiKeyService): string {
-  if (service === 'rd') return 'Real-Debrid'
+  if (service === 'prowlarr') return 'Prowlarr'
   if (service === 'tmdb') return 'TMDB'
-  if (service === 'tb') return 'TorBox'
   return 'TVDB'
 }
 
 function isApiKeyService(value: unknown): value is ApiKeyService {
-  return value === 'rd' || value === 'tmdb' || value === 'tvdb' || value === 'tb'
+  return value === 'tmdb' || value === 'tvdb' || value === 'prowlarr'
 }
 
 function configuredApiKeyForService(service: ApiKeyService): string {
-  if (service === 'rd') return getSetting('rdApiKey') || config.rdApiKey
+  if (service === 'prowlarr') return getSetting('prowlarrApiKey') || config.prowlarrApiKey
   if (service === 'tmdb') return config.tmdbApiKey
-  if (service === 'tb') return getSetting('torBoxApiKey') || config.torBoxApiKey
   return config.tvdbApiKey
 }
 
-async function validateTorBoxApiKey(key: string) {
-  const res = await fetch('https://api.torbox.app/v1/api/user/me', {
-    headers: { Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(15_000),
+async function validateProwlarrConnection(prowlarrUrl: string, key: string) {
+  const url = `${prowlarrUrl.replace(/\/$/, '')}/api/v1/indexer`
+  const res = await fetch(url, {
+    headers: { 'X-Api-Key': key },
+    signal: AbortSignal.timeout(10_000),
   })
-  if (!res.ok) throw new Error(`TorBox rejected the key (${res.status}).`)
-  const json = await res.json() as { data?: { email?: string } }
+  if (!res.ok) throw new Error(`Prowlarr rejected the key (${res.status}).`)
+  const json = await res.json() as Array<{ id: number; enable: boolean; protocol: string }>
+  const usenetCount = json.filter(i => i.enable && i.protocol === 'usenet').length
   return {
-    label: json.data?.email ? `Account: ${json.data.email}` : 'TorBox account verified',
-  }
-}
-
-async function validateRealDebridApiKey(key: string) {
-  const res = await fetch('https://api.real-debrid.com/rest/1.0/user', {
-    headers: { Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(15_000),
-  })
-  if (!res.ok) throw new Error(`Real-Debrid rejected the key (${res.status}).`)
-  const json = await res.json() as { username?: string }
-  return {
-    label: json.username ? `Account: ${json.username}` : 'Real-Debrid account verified',
+    label: `Connected — ${usenetCount} usenet indexer${usenetCount !== 1 ? 's' : ''} enabled`,
   }
 }
 
@@ -174,30 +162,12 @@ async function validateTvdbApiKey(key: string) {
   }
 }
 
-async function validateApiKeyForService(service: ApiKeyService, key: string) {
-  if (service === 'rd') return validateRealDebridApiKey(key)
+async function validateApiKeyForService(service: ApiKeyService, key: string, extra?: Record<string, string>) {
+  if (service === 'prowlarr') return validateProwlarrConnection(extra?.prowlarrUrl ?? config.prowlarrUrl, key)
   if (service === 'tmdb') return validateTmdbApiKey(key)
-  if (service === 'tb') return validateTorBoxApiKey(key)
   return validateTvdbApiKey(key)
 }
 
-function refreshStreamProviderConfig(): void {
-  const rdProviderUrls = getSetting('rdStreamProviderUrls') ?? ''
-  const torBoxProviderUrls = getSetting('torBoxStreamProviderUrls') ?? ''
-  const genericProviderUrls = getSetting('streamProviderUrls') ?? ''
-  config.streamProviderUrls = collectStreamProviderUrls(
-    rdProviderUrls,
-    torBoxProviderUrls,
-    genericProviderUrls,
-  )
-  config.stremioSearchProviderUrls = collectStreamProviderUrls(
-    rdProviderUrls,
-    torBoxProviderUrls,
-    genericProviderUrls,
-    config.streamProviderUrls.join('\n'),
-    config.sootioUrl,
-  )
-}
 
 function html(file: string) {
   return readFileSync(join(__dir, file), 'utf8')
@@ -724,16 +694,15 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!requireAdmin(req, reply as never)) return
     reply.header('Cache-Control', 'no-store')
     return {
-      sootioUrl:         config.sootioUrl,
-      streamProviderUrls: config.streamProviderUrls.join('\n'),
-      preferredAudioLanguage: config.preferredAudioLanguage,
-      englishStreamMode: config.englishStreamMode,
-      streamRankingMode: config.streamRankingMode,
-      stremioSearchEnabled: config.stremioSearchEnabled,
-      stremioSearchSource: config.stremioSearchSource,
-      mediaSourceSelection: config.mediaSourceSelection,
-      mediaSourceLimit: config.mediaSourceLimit,
       serverUrl:         config.serverUrl,
+      prowlarrUrl:       getSetting('prowlarrUrl') || config.prowlarrUrl,
+      hasProwlarrApiKey: !!(getSetting('prowlarrApiKey') || config.prowlarrApiKey),
+      nntpHost:          getSetting('nntpHost') || config.nntpHost,
+      nntpPort:          parseInt(getSetting('nntpPort') ?? '') || config.nntpPort,
+      nntpUser:          getSetting('nntpUser') || config.nntpUser,
+      hasNntpPass:       !!(getSetting('nntpPass') || config.nntpPass),
+      nntpSsl:           getSetting('nntpSsl') != null ? parseBooleanSetting(getSetting('nntpSsl') ?? undefined, true) : config.nntpSsl,
+      nntpConnections:   parseInt(getSetting('nntpConnections') ?? '') || config.nntpConnections,
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
       traktWatchlistShows: config.traktWatchlistShows,
@@ -746,10 +715,6 @@ export async function uiRoutes(app: FastifyInstance) {
       showAddDefaultMode: config.showAddDefaultMode,
       movieReleaseMode: config.movieReleaseMode,
       traktLists:        config.traktLists,
-      hasSootioUrl:      !!getSetting('sootioUrl'),
-      hasRdApiKey:       !!getSetting('rdApiKey'),
-      hasTorBoxApiKey:   !!getSetting('torBoxApiKey'),
-      torBoxCleanupEnabled: getSetting('torBoxCleanupMode') !== 'keep',
       hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
       hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
       hasTraktClientSecret: !!getSetting('traktClientSecret'),
@@ -787,7 +752,7 @@ export async function uiRoutes(app: FastifyInstance) {
 
   app.post('/ui/settings-data/validate-key', async (req, reply) => {
     if (!requireAdmin(req, reply as never)) return
-    const body = (req.body ?? {}) as { service?: unknown; value?: unknown }
+    const body = (req.body ?? {}) as { service?: unknown; value?: unknown; prowlarrUrl?: unknown }
     if (!isApiKeyService(body.service)) {
       return reply.code(400).send({ error: 'Unsupported API service.' })
     }
@@ -799,8 +764,13 @@ export async function uiRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: `${apiKeyServiceLabel(service)} API key is not configured.` })
     }
 
+    const extra: Record<string, string> = {}
+    if (typeof body.prowlarrUrl === 'string' && body.prowlarrUrl.trim()) {
+      extra.prowlarrUrl = body.prowlarrUrl.trim().replace(/\/$/, '')
+    }
+
     try {
-      const result = await validateApiKeyForService(service, key)
+      const result = await validateApiKeyForService(service, key, extra)
       return {
         ok: true,
         service,
@@ -816,73 +786,53 @@ export async function uiRoutes(app: FastifyInstance) {
   app.post('/ui/settings-data', async (req, reply) => {
     const user = currentUiUser(req as never)
     if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
-    const body = (req.body ?? {}) as Record<string, string | string[] | boolean>
+    const body = (req.body ?? {}) as Record<string, string | string[] | boolean | number>
     const editable: (keyof typeof config)[] = [
-      'sootioUrl', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret', 'mdblistApiKey',
+      'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret', 'mdblistApiKey',
     ]
     for (const key of editable) {
       if (typeof body[key] === 'string') {
-        let val = body[key].trim()
-        if (key === 'sootioUrl') val = normalizeSootioUrl(val)
+        let val = (body[key] as string).trim()
         if (key === 'serverUrl') val = val.replace(/\/$/, '')
         setSetting(key, val)
         config[key] = val as never
       }
     }
-    if (typeof body.rdApiKey === 'string') {
-      setSetting('rdApiKey', body.rdApiKey.trim())
+    if (typeof body.prowlarrUrl === 'string') {
+      const val = body.prowlarrUrl.trim().replace(/\/$/, '')
+      setSetting('prowlarrUrl', val)
+      config.prowlarrUrl = val
     }
-    if (typeof body.torBoxApiKey === 'string') {
-      setSetting('torBoxApiKey', body.torBoxApiKey.trim())
+    if (typeof body.prowlarrApiKey === 'string') {
+      setSetting('prowlarrApiKey', body.prowlarrApiKey.trim())
+      config.prowlarrApiKey = getSetting('prowlarrApiKey') || config.prowlarrApiKey
     }
-    const storedRdApiKey = getSetting('rdApiKey') || ''
-    const storedTorBoxApiKey = getSetting('torBoxApiKey') || ''
-    config.rdApiKey = storedRdApiKey
-    config.torBoxApiKey = storedTorBoxApiKey
-    if (typeof body.streamProviderUrls === 'string') {
-      setSetting('streamProviderUrls', parseStreamProviderUrls(body.streamProviderUrls).join('\n'))
-      setSetting('rdStreamProviderUrls', '')
-      setSetting('torBoxStreamProviderUrls', '')
+    if (typeof body.nntpHost === 'string') {
+      const val = body.nntpHost.trim()
+      setSetting('nntpHost', val)
+      config.nntpHost = val
     }
-    if (body.torBoxCleanupEnabled != null) {
-      const enabled = parseBooleanSetting(String(body.torBoxCleanupEnabled), true)
-      setSetting('torBoxCleanupMode', enabled ? 'delete' : 'keep')
+    if (typeof body.nntpPort === 'string' || typeof body.nntpPort === 'number') {
+      const val = parseInt(String(body.nntpPort), 10)
+      if (val > 0) { setSetting('nntpPort', String(val)); config.nntpPort = val }
     }
-    refreshStreamProviderConfig()
-    if (typeof body.englishStreamMode === 'string') {
-      const mode = parseEnglishStreamMode(body.englishStreamMode)
-      setSetting('englishStreamMode', mode)
-      config.englishStreamMode = mode
+    if (typeof body.nntpUser === 'string') {
+      const val = body.nntpUser.trim()
+      setSetting('nntpUser', val)
+      config.nntpUser = val
     }
-    if (typeof body.streamRankingMode === 'string') {
-      const mode = parseStreamRankingMode(body.streamRankingMode)
-      setSetting('streamRankingMode', mode)
-      config.streamRankingMode = mode
+    if (typeof body.nntpPass === 'string') {
+      setSetting('nntpPass', body.nntpPass)
+      config.nntpPass = getSetting('nntpPass') || config.nntpPass
     }
-    if (body.stremioSearchEnabled != null) {
-      const enabled = parseBooleanSetting(String(body.stremioSearchEnabled), false)
-      setSetting('stremioSearchEnabled', enabled ? 'true' : 'false')
-      config.stremioSearchEnabled = enabled
+    if (body.nntpSsl != null) {
+      const val = parseBooleanSetting(String(body.nntpSsl), true)
+      setSetting('nntpSsl', val ? 'true' : 'false')
+      config.nntpSsl = val
     }
-    if (typeof body.stremioSearchSource === 'string') {
-      const source = parseStremioSearchSource(body.stremioSearchSource)
-      setSetting('stremioSearchSource', source)
-      config.stremioSearchSource = source
-    }
-    if (body.mediaSourceSelection != null) {
-      const enabled = parseBooleanSetting(String(body.mediaSourceSelection), false)
-      setSetting('mediaSourceSelection', enabled ? 'true' : 'false')
-      config.mediaSourceSelection = enabled
-    }
-    if (body.mediaSourceLimit != null) {
-      const limit = parseMediaSourceLimit(String(body.mediaSourceLimit))
-      setSetting('mediaSourceLimit', String(limit))
-      config.mediaSourceLimit = limit
-    }
-    if (typeof body.preferredAudioLanguage === 'string') {
-      const language = parseAudioLanguage(body.preferredAudioLanguage)
-      setSetting('preferredAudioLanguage', language)
-      config.preferredAudioLanguage = language
+    if (typeof body.nntpConnections === 'string' || typeof body.nntpConnections === 'number') {
+      const val = parseInt(String(body.nntpConnections), 10)
+      if (val > 0) { setSetting('nntpConnections', String(val)); config.nntpConnections = val }
     }
     if (body.traktWatchlistMovies != null) {
       const enabled = parseBooleanSetting(String(body.traktWatchlistMovies), true)

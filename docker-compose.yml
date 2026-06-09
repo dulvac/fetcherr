@@ -1,16 +1,23 @@
 services:
-  fetcherr:
-    image: ghcr.io/goneturbo/fetcherr:latest
-    container_name: fetcherr
+  fetcherr-usenet:
+    image: ghcr.io/goneturbo/fetcherr:usenet
+    container_name: fetcherr-usenet
     restart: unless-stopped
     ports:
-      - "9990:9990"
+      - "9991:9990"
     environment:
       PORT: "9990"
       DATABASE_PATH: /app/data/fetcherr.db
-      SERVER_NAME: "${SERVER_NAME:-Fetcherr}"
-      SERVER_ID: "${SERVER_ID:-fetcherr-001}"
-      SERVER_URL: "${SERVER_URL:-http://localhost:9990}"
-      RD_API_KEY: "${RD_API_KEY:-}"
+      SERVER_NAME: "${SERVER_NAME:-Fetcherr Usenet}"
+      SERVER_ID: "${SERVER_ID:-fetcherr-usenet-001}"
+      SERVER_URL: "${SERVER_URL:-http://localhost:9991}"
+      PROWLARR_URL: "${PROWLARR_URL:-}"
+      PROWLARR_API_KEY: "${PROWLARR_API_KEY:-}"
+      NNTP_HOST: "${NNTP_HOST:-}"
+      NNTP_PORT: "${NNTP_PORT:-563}"
+      NNTP_USER: "${NNTP_USER:-}"
+      NNTP_PASS: "${NNTP_PASS:-}"
+      NNTP_SSL: "${NNTP_SSL:-true}"
+      NNTP_CONNECTIONS: "${NNTP_CONNECTIONS:-10}"
     volumes:
-      - ./data:/app/data
+      - ./data-usenet:/app/data
