@@ -8,9 +8,14 @@ services:
     environment:
       PORT: "9990"
       DATABASE_PATH: /app/data/fetcherr.db
-      SERVER_NAME: "${SERVER_NAME:-Fetcherr Usenet}"
-      SERVER_ID: "${SERVER_ID:-fetcherr-usenet-001}"
-      SERVER_URL: "${SERVER_URL:-http://localhost:9991}"
+      SERVER_NAME: "Fetcherr Usenet"
+      SERVER_ID: "fetcherr-usenet-001"
+      SERVER_URL: "${USENET_SERVER_URL:-http://localhost:9991}"
+      TMDB_API_KEY: "${TMDB_API_KEY:-}"
+      TVDB_API_KEY: "${TVDB_API_KEY:-}"
+      TRAKT_CLIENT_ID: "${TRAKT_CLIENT_ID:-}"
+      TRAKT_CLIENT_SECRET: "${TRAKT_CLIENT_SECRET:-}"
+      TRAKT_USERNAME: "${TRAKT_USERNAME:-}"
       PROWLARR_URL: "${PROWLARR_URL:-}"
       PROWLARR_API_KEY: "${PROWLARR_API_KEY:-}"
       NNTP_HOST: "${NNTP_HOST:-}"
