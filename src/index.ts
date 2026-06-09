@@ -1746,6 +1746,10 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
     headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${item.totalBytes}`
   }
 
+  if (!isBounded) {
+    // Prevent Node.js from adding Transfer-Encoding: chunked when Content-Length is absent
+    ;(reply.raw as unknown as { useChunkedEncodingByDefault: boolean }).useChunkedEncodingByDefault = false
+  }
   reply.raw.writeHead(rangeHeader ? 206 : 200, headers)
 
   const sock = reply.raw as RawSocket
