@@ -24,5 +24,6 @@ services:
       NNTP_PASS: "${NNTP_PASS:-}"
       NNTP_SSL: "${NNTP_SSL:-true}"
       NNTP_CONNECTIONS: "${NNTP_CONNECTIONS:-10}"
+      MEDIA_SOURCE_SELECTION: "true"
     volumes:
       - ./data-usenet:/app/data

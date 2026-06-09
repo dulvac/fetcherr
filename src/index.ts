@@ -19,7 +19,7 @@ import {
   trackDirectTorBoxUrl,
   torBoxRequestdlTorrentId,
 } from './torbox.js'
-import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription, getUsenetItemById } from './db.js'
+import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription, getUsenetItemById, getUsenetMovieItem, getUsenetEpisodeItem } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
@@ -1552,6 +1552,30 @@ async function buildPlaybackMediaSources(input: {
   runtimeTicks: number
   playbackClient: string
 }) {
+  // For usenet items, return direct stream URL — skip the /play/ redirect chain
+  const movieMatch = input.playPath.match(/^\/play\/(tt\d+)$/)
+  if (movieMatch) {
+    const movie = getMovieByImdbId(movieMatch[1])
+    if (movie) {
+      const usenetItem = getUsenetMovieItem(movie.tmdbId)
+      if (usenetItem?.status === 'indexed') {
+        const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
+        return [playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)]
+      }
+    }
+  }
+  const epMatch = input.playPath.match(/^\/play\/(tt\d+)\/(\d+)\/(\d+)$/)
+  if (epMatch) {
+    const show = getShowByImdbId(epMatch[1])
+    if (show) {
+      const usenetItem = getUsenetEpisodeItem(show.tmdbId, parseInt(epMatch[2], 10), parseInt(epMatch[3], 10))
+      if (usenetItem?.status === 'indexed') {
+        const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
+        return [playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)]
+      }
+    }
+  }
+
   const fallbackUrl = createSignedPlaybackUrl(input.origin, input.playPath)
   const fallbackSource = playbackMediaSource(input.sourceId, input.name, fallbackUrl, input.runtimeTicks)
 
