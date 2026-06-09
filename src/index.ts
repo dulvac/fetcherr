@@ -1691,14 +1691,17 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
   const rangeHeader = (req.headers as Record<string, string | undefined>).range
   const rangeStart = rangeHeader ? (parseInt(rangeHeader.match(/bytes=(\d+)-/)?.[1] ?? '0', 10) || 0) : 0
 
+  const rangeEnd = item.totalBytes - 1
+  const contentLength = item.totalBytes - rangeStart
+
   const headers: Record<string, string> = {
     'Content-Type': contentType,
     'Accept-Ranges': 'bytes',
-    'Transfer-Encoding': 'chunked',
+    'Content-Length': String(contentLength),
     'Cache-Control': 'no-cache',
   }
   if (rangeHeader) {
-    headers['Content-Range'] = `bytes ${rangeStart}-*/${item.totalBytes}`
+    headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${item.totalBytes}`
   }
 
   reply.raw.writeHead(rangeHeader ? 206 : 200, headers)
