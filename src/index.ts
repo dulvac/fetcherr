@@ -1605,15 +1605,21 @@ async function streamDirectSegments(
   startByteWithinSegment: number,
   itemId: string,
   log: typeof app.log,
+  maxBytes = Infinity,
 ): Promise<void> {
+  let sent = 0
   for (let i = startSegment; i < segments.length; i++) {
+    if (sent >= maxBytes) break
     const seg = segments[i]
     log.info(`usenet: segment ${seg.number}/${segments.length} item ${itemId}`)
     const body = await pool.fetchArticleBody(seg.messageId)
     const decoded = ydecode(body)
-    const data = i === startSegment && startByteWithinSegment > 0
+    let data = i === startSegment && startByteWithinSegment > 0
       ? decoded.slice(startByteWithinSegment)
       : decoded
+    const remaining = maxBytes - sent
+    if (data.length > remaining) data = data.slice(0, remaining)
+    sent += data.length
     if (!await writeChunk(sock, data)) break
   }
 }
@@ -1625,7 +1631,9 @@ async function streamRarVolumes(
   rangeStart: number,
   log: typeof app.log,
   itemId: string,
+  maxBytes = Infinity,
 ): Promise<void> {
+  let sent = 0
   // Build cumulative video-data start offset per volume
   const volDataStart: number[] = []
   let cum = 0
@@ -1653,11 +1661,13 @@ async function streamRarVolumes(
   const startByteWithinSeg = rawPosInVol - startVolOffsets[startSeg]
 
   for (let vi = startVol; vi < volumes.length; vi++) {
+    if (sent >= maxBytes) break
     const vol = volumes[vi]
     const isStartVol = vi === startVol
     const segStart = isStartVol ? startSeg : 0
 
     for (let si = segStart; si < vol.segments.length; si++) {
+      if (sent >= maxBytes) break
       const seg = vol.segments[si]
       log.info(`usenet: rar vol ${vi} seg ${si + 1}/${vol.segments.length} item ${itemId}`)
       const body = await pool.fetchArticleBody(seg.messageId)
@@ -1667,12 +1677,14 @@ async function streamRarVolumes(
       if (isStartVol && si === startSeg) {
         data = decoded.slice(startByteWithinSeg)
       } else if (!isStartVol && si === 0) {
-        // Skip this volume's RAR header
         data = decoded.length > vol.headerBytes ? decoded.slice(vol.headerBytes) : Buffer.alloc(0)
       } else {
         data = decoded
       }
 
+      const remaining = maxBytes - sent
+      if (data.length > remaining) data = data.slice(0, remaining)
+      sent += data.length
       if (data.length > 0 && !await writeChunk(sock, data)) return
     }
   }
@@ -1689,16 +1701,31 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
   const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
 
   const rangeHeader = (req.headers as Record<string, string | undefined>).range
-  const rangeStart = rangeHeader ? (parseInt(rangeHeader.match(/bytes=(\d+)-/)?.[1] ?? '0', 10) || 0) : 0
+  let rangeStart = 0
+  let rangeEndRequested: number | null = null  // null = open-ended
+  if (rangeHeader) {
+    const m = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+    if (m) {
+      rangeStart = parseInt(m[1], 10) || 0
+      rangeEndRequested = m[2] ? parseInt(m[2], 10) : null
+    }
+  }
 
-  const rangeEnd = item.totalBytes - 1
-  const contentLength = item.totalBytes - rangeStart
+  const rangeEnd = rangeEndRequested ?? (item.totalBytes - 1)
+  // For open-ended ranges, totalBytes is an estimate so we omit Content-Length
+  // and use Connection: close to signal EOF. For bounded ranges, we know exactly.
+  const isBounded = rangeEndRequested !== null
+  const maxBytes = isBounded ? (rangeEnd - rangeStart + 1) : Infinity
 
   const headers: Record<string, string> = {
     'Content-Type': contentType,
     'Accept-Ranges': 'bytes',
-    'Content-Length': String(contentLength),
     'Cache-Control': 'no-cache',
+  }
+  if (isBounded) {
+    headers['Content-Length'] = String(rangeEnd - rangeStart + 1)
+  } else {
+    headers['Connection'] = 'close'
   }
   if (rangeHeader) {
     headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${item.totalBytes}`
@@ -1713,13 +1740,13 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
     const parsed = JSON.parse(item.segmentsJson) as unknown
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { type?: string }).type === 'rar') {
       const { volumes } = parsed as { type: 'rar'; volumes: RarVolume[] }
-      await streamRarVolumes(pool, sock, volumes, rangeStart, app.log, itemId)
+      await streamRarVolumes(pool, sock, volumes, rangeStart, app.log, itemId, maxBytes)
     } else {
       const segments = parsed as Array<{ messageId: string; bytes: number; number: number }>
       const offsets = buildOffsetTable(segments)
       const startSegment = segmentIndexForOffset(offsets, rangeStart)
       const startByteWithinSegment = rangeStart - offsets[startSegment]
-      await streamDirectSegments(pool, sock, segments, startSegment, startByteWithinSegment, itemId, app.log)
+      await streamDirectSegments(pool, sock, segments, startSegment, startByteWithinSegment, itemId, app.log, maxBytes)
     }
   } catch (err) {
     app.log.warn(`usenet: stream error for item ${itemId}: ${err}`)
