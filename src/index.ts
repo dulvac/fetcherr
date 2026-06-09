@@ -1589,18 +1589,17 @@ interface RarVolume {
   segments: Array<{ messageId: string; bytes: number; number: number }>
 }
 
-async function writeToReply(
-  reply: { raw: NodeJS.WritableStream & { destroyed?: boolean; once(e: 'drain', fn: () => void): unknown } },
-  data: Buffer,
-): Promise<boolean> {
-  const canContinue = reply.raw.write(data)
-  if (!canContinue) await new Promise<void>(resolve => reply.raw.once('drain', resolve))
-  return !reply.raw.destroyed
+type RawSocket = NodeJS.WritableStream & { destroyed?: boolean; once(e: 'drain', fn: () => void): unknown }
+
+async function writeChunk(sock: RawSocket, data: Buffer): Promise<boolean> {
+  const canContinue = sock.write(data)
+  if (!canContinue) await new Promise<void>(resolve => sock.once('drain', resolve))
+  return !sock.destroyed
 }
 
 async function streamDirectSegments(
   pool: ReturnType<typeof getNntpPool>,
-  reply: Parameters<typeof writeToReply>[0],
+  sock: RawSocket,
   segments: Array<{ messageId: string; bytes: number; number: number }>,
   startSegment: number,
   startByteWithinSegment: number,
@@ -1615,13 +1614,13 @@ async function streamDirectSegments(
     const data = i === startSegment && startByteWithinSegment > 0
       ? decoded.slice(startByteWithinSegment)
       : decoded
-    if (!await writeToReply(reply, data)) break
+    if (!await writeChunk(sock, data)) break
   }
 }
 
 async function streamRarVolumes(
   pool: ReturnType<typeof getNntpPool>,
-  reply: Parameters<typeof writeToReply>[0],
+  sock: RawSocket,
   volumes: RarVolume[],
   rangeStart: number,
   log: typeof app.log,
@@ -1674,7 +1673,7 @@ async function streamRarVolumes(
         data = decoded
       }
 
-      if (data.length > 0 && !await writeToReply(reply, data)) return
+      if (data.length > 0 && !await writeChunk(sock, data)) return
     }
   }
 }
@@ -1704,21 +1703,20 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
 
   reply.raw.writeHead(rangeHeader ? 206 : 200, headers)
 
+  const sock = reply.raw as RawSocket
   const pool = getNntpPool()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const replyRaw = reply.raw as any as Parameters<typeof writeToReply>[0]
 
   try {
     const parsed = JSON.parse(item.segmentsJson) as unknown
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { type?: string }).type === 'rar') {
       const { volumes } = parsed as { type: 'rar'; volumes: RarVolume[] }
-      await streamRarVolumes(pool, replyRaw, volumes, rangeStart, app.log, itemId)
+      await streamRarVolumes(pool, sock, volumes, rangeStart, app.log, itemId)
     } else {
       const segments = parsed as Array<{ messageId: string; bytes: number; number: number }>
       const offsets = buildOffsetTable(segments)
       const startSegment = segmentIndexForOffset(offsets, rangeStart)
       const startByteWithinSegment = rangeStart - offsets[startSegment]
-      await streamDirectSegments(pool, replyRaw, segments, startSegment, startByteWithinSegment, itemId, app.log)
+      await streamDirectSegments(pool, sock, segments, startSegment, startByteWithinSegment, itemId, app.log)
     }
   } catch (err) {
     app.log.warn(`usenet: stream error for item ${itemId}: ${err}`)
