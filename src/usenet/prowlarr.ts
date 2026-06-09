@@ -59,12 +59,20 @@ async function getUsenetIndexerIds(): Promise<number[]> {
   return data.filter(i => i.enable && i.protocol === 'usenet').map(i => i.id)
 }
 
+const HD_PATTERN  = /\b(2160p|4k|uhd|1080p)\b/i
+const LOW_PATTERN = /\b(720p|480p|576p|dvdscr|dvdrip|hdcam|cam|ts|telesync)\b/i
+
+function isHd(title: string): boolean {
+  return HD_PATTERN.test(title) || !LOW_PATTERN.test(title)
+}
+
 function selectBestNzb(results: NzbResult[], maxBytes: number): NzbResult | null {
   if (!results.length) return null
-  const fits = results
-    .filter(r => r.sizeBytes === 0 || r.sizeBytes <= maxBytes)
-    .sort((a, b) => b.grabs - a.grabs)
-  return fits[0] ?? [...results].sort((a, b) => b.grabs - a.grabs)[0]
+  const byGrabs = (a: NzbResult, b: NzbResult) => b.grabs - a.grabs
+  const fits = results.filter(r => r.sizeBytes === 0 || r.sizeBytes <= maxBytes)
+  const pool = fits.length ? fits : [...results]
+  const hd = pool.filter(r => isHd(r.title)).sort(byGrabs)
+  return hd[0] ?? pool.sort(byGrabs)[0]
 }
 
 export async function searchMovieNzb(imdbId: string): Promise<NzbResult | null> {
