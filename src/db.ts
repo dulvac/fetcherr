@@ -976,41 +976,43 @@ function sortDirection(sortOrder?: string): 'ASC' | 'DESC' {
   return normalized === 'asc' || normalized === 'ascending' ? 'ASC' : 'DESC'
 }
 
-function movieAvailabilityWhere(_availableOnly: boolean): string {
-  const clauses = [
-    `EXISTS (
+function movieAvailabilityWhere(availableOnly: boolean): string {
+  const clauses: string[] = []
+  if (availableOnly) {
+    clauses.push(`EXISTS (
       SELECT 1
       FROM usenet_items
       WHERE usenet_items.media_type = 'movie'
         AND usenet_items.tmdb_id = movies.tmdb_id
         AND usenet_items.status = 'indexed'
-    )`,
-    `NOT EXISTS (
+    )`)
+  }
+  clauses.push(`NOT EXISTS (
       SELECT 1
       FROM hidden_library_items
       WHERE hidden_library_items.media_type = 'movie'
         AND hidden_library_items.tmdb_id = movies.tmdb_id
-    )`,
-  ]
+    )`)
   return `WHERE ${clauses.join('\n  AND ')}`
 }
 
-function showAvailabilityWhere(_availableOnly: boolean): string {
-  const clauses = [
-    `EXISTS (
+function showAvailabilityWhere(availableOnly: boolean): string {
+  const clauses: string[] = []
+  if (availableOnly) {
+    clauses.push(`EXISTS (
       SELECT 1
       FROM usenet_items
       WHERE usenet_items.media_type = 'episode'
         AND usenet_items.tmdb_id = shows.tmdb_id
         AND usenet_items.status = 'indexed'
-    )`,
-    `NOT EXISTS (
+    )`)
+  }
+  clauses.push(`NOT EXISTS (
       SELECT 1
       FROM hidden_library_items
       WHERE hidden_library_items.media_type = 'show'
         AND hidden_library_items.tmdb_id = shows.tmdb_id
-    )`,
-  ]
+    )`)
   return `WHERE ${clauses.join('\n  AND ')}`
 }
 
