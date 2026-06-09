@@ -27,7 +27,7 @@ import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStrea
 import { getNntpPool } from './usenet/nntp-pool.js'
 import { ydecode } from './usenet/ydecode.js'
 import { segmentIndexForOffset, buildOffsetTable } from './usenet/nzb-parser.js'
-import { startUsenetSync } from './usenet/sync.js'
+import { startUsenetSync, syncUsenetLibrary } from './usenet/sync.js'
 
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
 import { streamMetadataText } from './streamUtils.js'
@@ -1927,6 +1927,7 @@ app.post('/trakt/auth', async (req, reply) => {
 app.post('/sync', async (req, reply) => {
   if (!requireAdminUiSession(req as never, reply as never)) return
   runSync().catch(err => app.log.error(`Manual sync failed: ${err}`))
+  syncUsenetLibrary().catch(err => app.log.error(`Manual usenet sync failed: ${err}`))
   return { status: 'sync started' }
 })
 

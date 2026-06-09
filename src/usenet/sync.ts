@@ -134,7 +134,7 @@ async function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function syncLibrary(): Promise<void> {
+export async function syncUsenetLibrary(): Promise<void> {
   if (!isProwlarrConfigured()) return
 
   const movieIds = listUnindexedMovieTmdbIds()
@@ -167,7 +167,7 @@ export function startUsenetSync(): void {
   }
 
   const run = () => {
-    syncLibrary().catch(e => console.error('[usenet/sync] sync error:', e?.message ?? e))
+    syncUsenetLibrary().catch(e => console.error('[usenet/sync] sync error:', e?.message ?? e))
   }
 
   setTimeout(() => {
