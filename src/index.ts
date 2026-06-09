@@ -1692,6 +1692,21 @@ async function streamRarVolumes(
 
 // ── Stream endpoint ─────────────────────────────────────────────────────────
 
+app.head('/usenet/stream/:itemId', async (req, reply) => {
+  const { itemId } = req.params as { itemId: string }
+  const item = getUsenetItemById(parseInt(itemId, 10))
+  if (!item || item.status !== 'indexed') return reply.code(404).send()
+  const ext = item.videoFilename.split('.').pop()?.toLowerCase() ?? 'mkv'
+  const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
+  reply.raw.writeHead(200, {
+    'Content-Type': contentType,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': String(item.totalBytes),
+    'Cache-Control': 'no-cache',
+  })
+  reply.raw.end()
+})
+
 app.get('/usenet/stream/:itemId', async (req, reply) => {
   const { itemId } = req.params as { itemId: string }
   const item = getUsenetItemById(parseInt(itemId, 10))
