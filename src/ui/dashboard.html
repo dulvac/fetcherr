@@ -917,6 +917,66 @@
       `
       : ''
 
+    let usenetCard = ''
+    if (item.usenet) {
+      const u = item.usenet
+      if (isShow) {
+        const pct = u.total > 0 ? Math.round((u.indexed / u.total) * 100) : 0
+        const statusLabel = u.indexed === u.total
+          ? `<span style="color:var(--green,#4caf50)">All indexed (${u.indexed}/${u.total})</span>`
+          : u.failed > 0
+          ? `<span style="color:var(--amber,#f59e0b)">${u.indexed}/${u.total} indexed, ${u.failed} failed</span>`
+          : `<span style="color:var(--amber,#f59e0b)">${u.indexed}/${u.total} indexed</span>`
+        usenetCard = `
+          <div class="detail-card">
+            <h3>Usenet Index</h3>
+            <div class="detail-row">
+              <div class="detail-label">Episodes indexed</div>
+              <div class="detail-value">${statusLabel}</div>
+            </div>
+            <div class="detail-row" style="flex-direction:column;gap:4px">
+              <div style="background:var(--surface2,#2a2a2a);border-radius:4px;height:6px;overflow:hidden">
+                <div style="background:var(--green,#4caf50);height:100%;width:${pct}%;transition:width .3s"></div>
+              </div>
+            </div>
+          </div>
+        `
+      } else {
+        const statusColor = u.status === 'indexed' ? 'var(--green,#4caf50)' : 'var(--red,#ef4444)'
+        const statusText = u.status === 'indexed' ? 'Indexed' : `Failed: ${u.failReason || 'unknown'}`
+        const sizeGb = u.totalBytes > 0 ? (u.totalBytes / 1e9).toFixed(2) + ' GB' : '—'
+        usenetCard = `
+          <div class="detail-card">
+            <h3>Usenet Index</h3>
+            <div class="detail-row">
+              <div class="detail-label">Status</div>
+              <div class="detail-value" style="color:${statusColor}">${escapeHtml(statusText)}</div>
+            </div>
+            ${u.status === 'indexed' ? `
+            <div class="detail-row">
+              <div class="detail-label">File</div>
+              <div class="detail-value" style="font-size:.8em;word-break:break-all">${escapeHtml(u.filename)}</div>
+            </div>
+            <div class="detail-row">
+              <div class="detail-label">Size</div>
+              <div class="detail-value">${sizeGb}</div>
+            </div>
+            ` : ''}
+          </div>
+        `
+      }
+    } else if (item.inLibrary) {
+      usenetCard = `
+        <div class="detail-card">
+          <h3>Usenet Index</h3>
+          <div class="detail-row">
+            <div class="detail-label">Status</div>
+            <div class="detail-value" style="color:var(--amber,#f59e0b)">Not yet indexed</div>
+          </div>
+        </div>
+      `
+    }
+
     const overviewPanel = `
       <div class="detail-hero">
         ${poster}
@@ -932,6 +992,7 @@
       </div>
       <div class="detail-grid">
         ${statusCard}
+        ${usenetCard}
         ${timingCard}
       </div>
       ${movieOverrideCard}

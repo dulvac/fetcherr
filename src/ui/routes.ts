@@ -14,6 +14,7 @@ import {
   setMovieReleaseModePreference,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
   canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, unhideLibraryItem, updateUser,
+  getUsenetMovieItem, listUsenetItemsForShow,
 } from '../db.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
@@ -27,6 +28,7 @@ import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShow
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries } from '../mdblist.js'
 import { getProviderFetchMetrics } from '../sootio.js'
+import { syncUsenetLibrary } from '../usenet/sync.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -626,6 +628,11 @@ export async function uiRoutes(app: FastifyInstance) {
         eligibleDate,
         releaseDate: movie.releaseDate || null,
         digitalReleaseDate: movie.digitalReleaseDate || null,
+        usenet: (() => {
+          const u = getUsenetMovieItem(movie.tmdbId)
+          if (!u) return null
+          return { status: u.status, filename: u.videoFilename, totalBytes: u.totalBytes, failReason: u.failReason }
+        })(),
         collectionItems: (await fetchMovieCollection(movie.tmdbId))
           .filter(item => item.tmdbId !== movie.tmdbId)
           .map(item => ({
@@ -669,6 +676,24 @@ export async function uiRoutes(app: FastifyInstance) {
       libraryMode: getEffectiveShowMode(show.tmdbId).mode,
       status: show.status,
       numSeasons: show.numSeasons,
+      usenet: (() => {
+        const items = listUsenetItemsForShow(show.tmdbId)
+        if (!items.length) return null
+        const indexed = items.filter(i => i.status === 'indexed')
+        const failed = items.filter(i => i.status === 'failed')
+        return {
+          total: items.length,
+          indexed: indexed.length,
+          failed: failed.length,
+          episodes: items.map(i => ({
+            season: i.season,
+            episode: i.episode,
+            status: i.status,
+            filename: i.videoFilename,
+            failReason: i.failReason,
+          })),
+        }
+      })(),
     }
   })
 
@@ -995,6 +1020,7 @@ export async function uiRoutes(app: FastifyInstance) {
       if (!canUserAccessMovie(user, movie)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
       unhideLibraryItem('movie', tmdbId)
       addSourceItem('manual:ui', 'movie', tmdbId)
+      syncUsenetLibrary().catch(() => {})
       return { ok: true, title: movie.title }
     }
 
@@ -1009,6 +1035,7 @@ export async function uiRoutes(app: FastifyInstance) {
       unhideLibraryItem('show', tmdbId)
       addSourceItem('manual:ui', 'show', tmdbId)
       await ensureShowSeasonsCached(show).catch(() => {})
+      syncUsenetLibrary().catch(() => {})
       return { ok: true, title: show.title, mode, activeSeasonNumber }
     }
 

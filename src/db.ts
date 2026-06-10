@@ -2402,6 +2402,13 @@ export function getUsenetEpisodeItem(showTmdbId: number, season: number, episode
   return r ? row2usenetItem(r as Record<string, unknown>) : null
 }
 
+export function listUsenetItemsForShow(showTmdbId: number): UsenetItem[] {
+  const rows = getDb().prepare(
+    `SELECT * FROM usenet_items WHERE media_type = 'episode' AND tmdb_id = ? ORDER BY season, episode`
+  ).all(showTmdbId)
+  return (rows as Array<Record<string, unknown>>).map(row2usenetItem)
+}
+
 export function listUnindexedMovieTmdbIds(): number[] {
   return (getDb().prepare(`
     SELECT m.tmdb_id FROM movies m

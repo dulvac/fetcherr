@@ -113,6 +113,7 @@ class NntpPool {
     while (this.idle.length > 0) {
       const conn = this.idle.pop()!
       if (!conn.closed) return conn
+      this.active--  // server closed this idle connection; reclaim the slot
     }
 
     // Open new connection if under limit

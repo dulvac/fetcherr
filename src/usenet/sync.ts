@@ -48,7 +48,7 @@ function buildRarSegmentsJson(volumes: NzbFile[], headerBytesPerVolume: number[]
   return { segmentsJson: JSON.stringify({ type: 'rar', volumes: volumeData }), totalBytes }
 }
 
-async function indexMovie(tmdbId: number): Promise<void> {
+export async function indexMovie(tmdbId: number): Promise<void> {
   const movie = getMovieByTmdbId(tmdbId)
   if (!movie?.imdbId) {
     markUsenetItemFailed('movie', tmdbId, null, null, 'no IMDB ID')
@@ -62,7 +62,7 @@ async function indexMovie(tmdbId: number): Promise<void> {
   await indexItem('movie', tmdbId, null, null, result)
 }
 
-async function indexEpisode(showTmdbId: number, season: number, episode: number): Promise<void> {
+export async function indexEpisode(showTmdbId: number, season: number, episode: number): Promise<void> {
   const show = getShowByTmdbId(showTmdbId)
   if (!show?.tvdbId) {
     markUsenetItemFailed('episode', showTmdbId, season, episode, 'no TVDB ID')

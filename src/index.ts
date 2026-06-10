@@ -27,7 +27,7 @@ import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStrea
 import { getNntpPool } from './usenet/nntp-pool.js'
 import { ydecode } from './usenet/ydecode.js'
 import { segmentIndexForOffset, buildOffsetTable } from './usenet/nzb-parser.js'
-import { startUsenetSync, syncUsenetLibrary } from './usenet/sync.js'
+import { syncUsenetLibrary, indexMovie as indexMovieNzb, indexEpisode as indexEpisodeNzb } from './usenet/sync.js'
 
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
 import { streamMetadataText } from './streamUtils.js'
@@ -107,7 +107,6 @@ getDb()
 }
 
 rehydrateTorBoxCleanupJobs()
-startUsenetSync()
 
 // Wrap Fastify logger so UI log viewer captures it
 wrapFastifyLogger(app)
@@ -1560,7 +1559,8 @@ async function buildPlaybackMediaSources(input: {
       const usenetItem = getUsenetMovieItem(movie.tmdbId)
       if (usenetItem?.status === 'indexed') {
         const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
-        return [playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)]
+        const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
+        return [{ ...src, Protocol: 'File', DirectStreamUrl: streamUrl }]
       }
     }
   }
@@ -1571,7 +1571,8 @@ async function buildPlaybackMediaSources(input: {
       const usenetItem = getUsenetEpisodeItem(show.tmdbId, parseInt(epMatch[2], 10), parseInt(epMatch[3], 10))
       if (usenetItem?.status === 'indexed') {
         const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
-        return [playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)]
+        const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
+        return [{ ...src, Protocol: 'File', DirectStreamUrl: streamUrl }]
       }
     }
   }
@@ -1797,12 +1798,22 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
     reply.raw.end()
   }
 })
-async function resolveMoviePlayback(imdbId: string, _playbackClient = ''): Promise<PlayResolution> {
+async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
   const movie = getMovieByImdbId(imdbId)
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
-  const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
-  app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
-  return { url, filename, provider: 'Usenet' }
+  const existing = getUsenetMovieItem(movie.tmdbId)
+  if (!existing) {
+    app.log.info(`play: usenet on-demand indexing movie ${imdbId}`)
+    await indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet index failed for ${imdbId}: ${err}`))
+  }
+  const item = getUsenetMovieItem(movie.tmdbId)
+  if (item?.status === 'indexed') {
+    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
+    app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
+    return { url, filename, provider: 'Usenet' }
+  }
+  app.log.info(`play: usenet unavailable for ${imdbId}, falling back to stremio`)
+  return resolveStremioPlayback('movie', imdbId, playbackClient)
 }
 
 async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: string, playbackClient = ''): Promise<PlayResolution> {
@@ -1811,13 +1822,23 @@ async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: s
   return resolvePlayableStream(streams, `${mediaType} ${externalId}`, playPath, undefined, true)
 }
 
-async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, _playbackClient = ''): Promise<PlayResolution> {
+async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, playbackClient = ''): Promise<PlayResolution> {
   const label = `${imdbId} S${season}E${episodeNumber}`
   const show = getShowByImdbId(imdbId)
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
-  const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
-  app.log.info(`play: usenet resolved ${filename} for ${label}`)
-  return { url, filename, provider: 'Usenet' }
+  const existing = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
+  if (!existing) {
+    app.log.info(`play: usenet on-demand indexing ${label}`)
+    await indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet index failed for ${label}: ${err}`))
+  }
+  const item = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
+  if (item?.status === 'indexed') {
+    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
+    app.log.info(`play: usenet resolved ${filename} for ${label}`)
+    return { url, filename, provider: 'Usenet' }
+  }
+  app.log.info(`play: usenet unavailable for ${label}, falling back to stremio`)
+  return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
 }
 
 async function resolvePlaybackCandidate(token: string | undefined, playPath: string): Promise<PlayResolution | null> {
@@ -2084,6 +2105,7 @@ async function runSyncInternal() {
 
   markSyncComplete()
 
+  syncUsenetLibrary().catch(err => app.log.error(`Usenet post-sync index failed: ${err}`))
 }
 
 function runSync(): Promise<void> {
