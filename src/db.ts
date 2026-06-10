@@ -2527,7 +2527,22 @@ export function listUnindexedEpisodes(): Array<{ showTmdbId: number; season: num
     FROM episodes e
     INNER JOIN shows s ON s.tmdb_id = e.show_tmdb_id
     INNER JOIN source_items si ON si.media_type = 'show' AND si.tmdb_id = s.tmdb_id
+    LEFT JOIN manual_show_subscriptions mss ON mss.show_tmdb_id = s.tmdb_id
     WHERE e.air_date != '' AND e.air_date <= date('now')
+      AND e.season_number > 0
+      AND (
+        mss.show_tmdb_id IS NULL
+        OR mss.mode = 'all'
+        OR (mss.mode = 'latest' AND mss.active_season_number > 0
+            AND e.season_number = mss.active_season_number)
+        OR (mss.mode = 'latest' AND (mss.active_season_number IS NULL OR mss.active_season_number = 0)
+            AND e.season_number = (
+              SELECT MAX(e2.season_number) FROM episodes e2
+              WHERE e2.show_tmdb_id = e.show_tmdb_id
+                AND e2.season_number > 0
+                AND e2.air_date != '' AND e2.air_date <= date('now')
+            ))
+      )
       AND NOT EXISTS (
         SELECT 1 FROM usenet_items ui
         WHERE ui.media_type = 'episode'
