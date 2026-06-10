@@ -1597,7 +1597,9 @@ async function writeChunk(sock: RawSocket, data: Buffer): Promise<boolean> {
   return !sock.destroyed
 }
 
-const NNTP_PREFETCH = 4
+// Use up to half the connection pool for in-flight segment fetches.
+// Higher values saturate more connections and reduce initial buffering time.
+const NNTP_PREFETCH = Math.max(4, Math.floor(config.nntpConnections / 2))
 
 async function streamSegmentTasks(
   pool: ReturnType<typeof getNntpPool>,
