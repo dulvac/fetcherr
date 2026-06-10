@@ -7,8 +7,8 @@ import { ydecode } from './ydecode.js'
 
 const SYNC_INTERVAL_MS   = 6 * 60 * 60 * 1000
 const STARTUP_DELAY_MS   = 10_000
-const BATCH_SIZE         = 10
-const BATCH_DELAY_MS     = 2_000
+const BATCH_SIZE         = 1
+const BATCH_DELAY_MS     = 3_000
 const DEFAULT_VOL0_HEADER = 128
 const DEFAULT_CONT_HEADER = 50
 
@@ -56,6 +56,7 @@ export async function indexMovie(tmdbId: number): Promise<void> {
   }
   const result = await searchMovieNzb(movie.imdbId)
   if (!result) {
+    console.warn(`[usenet/sync] no NZB for movie ${tmdbId} (${movie.imdbId})`)
     markUsenetItemFailed('movie', tmdbId, null, null, 'no NZB results from Prowlarr')
     return
   }
