@@ -1782,10 +1782,12 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
     reply.raw.end()
   }
 })
-const USENET_TTL_MS = 24 * 60 * 60 * 1000
+// Failed items are retried after 7 days in case a new release has appeared on the indexer.
+// Indexed items are never considered stale — NZB message IDs are stable for years.
+const USENET_FAILED_RETRY_MS = 7 * 24 * 60 * 60 * 1000
 
-function usenetItemStale(item: { indexedAt: number }): boolean {
-  return Date.now() - item.indexedAt >= USENET_TTL_MS
+function usenetFailedExpired(item: { indexedAt: number }): boolean {
+  return Date.now() - item.indexedAt >= USENET_FAILED_RETRY_MS
 }
 
 function isDebridConfigured(): boolean {
@@ -1800,10 +1802,10 @@ async function resolveUsenetStream(playPath: string, origin: string): Promise<st
     const movie = getMovieByImdbId(movieMatch[1])
     if (!movie) return null
     let item = getUsenetMovieItem(movie.tmdbId)
-    if (item?.status === 'indexed' && !usenetItemStale(item)) {
+    if (item?.status === 'indexed') {
       return `${origin}/usenet/stream/${item.id}`
     }
-    if (item?.status === 'failed' && !usenetItemStale(item)) return null
+    if (item?.status === 'failed' && !usenetFailedExpired(item)) return null
     app.log.info(`playback: usenet indexing movie ${movieMatch[1]} during PlaybackInfo`)
     await Promise.race([
       indexMovieNzb(movie.tmdbId).catch(e => app.log.warn(`playback: usenet index failed for ${movieMatch[1]}: ${e}`)),
@@ -1820,10 +1822,10 @@ async function resolveUsenetStream(playPath: string, origin: string): Promise<st
     const s = parseInt(epMatch[2], 10)
     const e = parseInt(epMatch[3], 10)
     let item = getUsenetEpisodeItem(show.tmdbId, s, e)
-    if (item?.status === 'indexed' && !usenetItemStale(item)) {
+    if (item?.status === 'indexed') {
       return `${origin}/usenet/stream/${item.id}`
     }
-    if (item?.status === 'failed' && !usenetItemStale(item)) return null
+    if (item?.status === 'failed' && !usenetFailedExpired(item)) return null
     app.log.info(`playback: usenet indexing ${epMatch[1]} S${s}E${e} during PlaybackInfo`)
     await Promise.race([
       indexEpisodeNzb(show.tmdbId, s, e).catch(e2 => app.log.warn(`playback: usenet index failed for ${epMatch[1]} S${s}E${e}: ${e2}`)),
@@ -1841,16 +1843,11 @@ async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promis
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetMovieItem(movie.tmdbId)
   if (existing?.status === 'indexed') {
-    // Serve the existing item immediately; re-index in background if stale
-    if (usenetItemStale(existing)) {
-      app.log.info(`play: usenet item stale for ${imdbId}, re-indexing in background`)
-      indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet background reindex failed for ${imdbId}: ${err}`))
-    }
     const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
     app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
     return { url, filename, provider: 'Usenet' }
   }
-  if (existing?.status === 'failed' && !usenetItemStale(existing)) {
+  if (existing?.status === 'failed' && !usenetFailedExpired(existing)) {
     app.log.info(`play: usenet no NZB for ${imdbId}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
     if (isDebridConfigured()) return resolveStremioPlayback('movie', imdbId, playbackClient)
     throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
@@ -1880,16 +1877,11 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
   if (existing?.status === 'indexed') {
-    // Serve the existing item immediately; re-index in background if stale
-    if (usenetItemStale(existing)) {
-      app.log.info(`play: usenet item stale for ${label}, re-indexing in background`)
-      indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet background reindex failed for ${label}: ${err}`))
-    }
     const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
     app.log.info(`play: usenet resolved ${filename} for ${label}`)
     return { url, filename, provider: 'Usenet' }
   }
-  if (existing?.status === 'failed' && !usenetItemStale(existing)) {
+  if (existing?.status === 'failed' && !usenetFailedExpired(existing)) {
     app.log.info(`play: usenet no NZB for ${label}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
     if (isDebridConfigured()) return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
     throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
