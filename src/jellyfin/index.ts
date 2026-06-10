@@ -1960,11 +1960,12 @@ function defaultPlaybackMediaSource(id: string, name: string, playUrl: string, r
     SupportsTranscoding:  false,
     RequiresOpening:      false,
     RequiresClosing:      false,
-    Container:            'mkv',
-    RunTimeTicks:         runtimeTicks,
+    Container:                'mkv',
+    RunTimeTicks:             runtimeTicks,
+    DefaultAudioStreamIndex:  1,
     MediaStreams: [
       { Type: 'Video', Index: 0, Codec: 'h264', IsDefault: true },
-      { Type: 'Audio', Index: 1, Codec: 'aac',  IsDefault: true, Language: 'eng' },
+      { Type: 'Audio', Index: 1, Codec: 'eac3', IsDefault: true, Language: 'eng' },
     ],
   }
 }
