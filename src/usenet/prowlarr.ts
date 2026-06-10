@@ -53,21 +53,39 @@ async function getUsenetIndexerIds(): Promise<number[]> {
 let searchQueue: Promise<void> = Promise.resolve()
 const MIN_SEARCH_INTERVAL_MS = 2_000
 
+// Per-indexer rate limit: if an indexer returns 429, skip it until the backoff expires.
+// Never block the global queue waiting for a long Retry-After.
+const indexerRateLimitedUntil = new Map<number, number>()
+
 async function searchIndexer(indexerId: number, params: Record<string, string>): Promise<NzbResult[]> {
+  const rateLimitedUntil = indexerRateLimitedUntil.get(indexerId) ?? 0
+  if (Date.now() < rateLimitedUntil) {
+    console.warn(`[usenet/prowlarr] indexer ${indexerId} still rate limited, skipping`)
+    return []
+  }
+
   const result = new Promise<NzbResult[]>((resolve) => {
     searchQueue = searchQueue.then(async () => {
+      // Re-check inside queue in case it became rate-limited while waiting
+      const stillLimited = indexerRateLimitedUntil.get(indexerId) ?? 0
+      if (Date.now() < stillLimited) {
+        console.warn(`[usenet/prowlarr] indexer ${indexerId} rate limited, skipping`)
+        resolve([])
+        await new Promise(r => setTimeout(r, MIN_SEARCH_INTERVAL_MS))
+        return
+      }
+
       const url = new URL(`${config.prowlarrUrl}/${indexerId}/api`)
       url.searchParams.set('apikey', config.prowlarrApiKey)
       for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
       try {
-        let res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) })
+        const res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) })
         if (res.status === 429) {
-          const retryAfter = parseInt(res.headers.get('Retry-After') ?? '60', 10)
-          console.warn(`[usenet/prowlarr] indexer ${indexerId} rate limited, waiting ${retryAfter}s`)
-          await new Promise(r => setTimeout(r, retryAfter * 1000))
-          res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) })
-        }
-        if (!res.ok) {
+          const retryAfter = Math.min(parseInt(res.headers.get('Retry-After') ?? '300', 10), 3600)
+          console.warn(`[usenet/prowlarr] indexer ${indexerId} rate limited for ${retryAfter}s`)
+          indexerRateLimitedUntil.set(indexerId, Date.now() + retryAfter * 1000)
+          resolve([])
+        } else if (!res.ok) {
           console.warn(`[usenet/prowlarr] indexer ${indexerId} returned ${res.status}`)
           resolve([])
         } else {
