@@ -31,32 +31,56 @@ function parseRssItems(xml: string): NzbResult[] {
   return results
 }
 
-async function searchIndexer(indexerId: number, params: Record<string, string>): Promise<NzbResult[]> {
-  const url = new URL(`${config.prowlarrUrl}/${indexerId}/api`)
-  url.searchParams.set('apikey', config.prowlarrApiKey)
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  let res: Response
-  try {
-    res = await fetch(url.toString(), { signal: AbortSignal.timeout(20_000) })
-  } catch (e: unknown) {
-    console.warn(`[usenet/prowlarr] indexer ${indexerId} fetch failed:`, (e as Error)?.message ?? e)
-    return []
-  }
-  if (!res.ok) {
-    console.warn(`[usenet/prowlarr] indexer ${indexerId} returned ${res.status}`)
-    return []
-  }
-  return parseRssItems(await res.text())
-}
+// Cache indexer IDs for 1 hour — avoids one extra Prowlarr API call per search
+let indexerIdCache: { ids: number[]; expiresAt: number } | null = null
 
 async function getUsenetIndexerIds(): Promise<number[]> {
+  const now = Date.now()
+  if (indexerIdCache && now < indexerIdCache.expiresAt) return indexerIdCache.ids
   const res = await fetch(`${config.prowlarrUrl}/api/v1/indexer`, {
     headers: { 'X-Api-Key': config.prowlarrApiKey },
     signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) throw new Error(`Prowlarr indexers ${res.status}`)
   const data = await res.json() as Array<{ id: number; enable: boolean; protocol: string }>
-  return data.filter(i => i.enable && i.protocol === 'usenet').map(i => i.id)
+  const ids = data.filter(i => i.enable && i.protocol === 'usenet').map(i => i.id)
+  indexerIdCache = { ids, expiresAt: now + 60 * 60 * 1000 }
+  return ids
+}
+
+// Global throttle: one Prowlarr search at a time, minimum 2s between requests
+// NZBgeek (and most indexers) enforce per-account rate limits
+let searchQueue: Promise<void> = Promise.resolve()
+const MIN_SEARCH_INTERVAL_MS = 2_000
+
+async function searchIndexer(indexerId: number, params: Record<string, string>): Promise<NzbResult[]> {
+  const result = new Promise<NzbResult[]>((resolve) => {
+    searchQueue = searchQueue.then(async () => {
+      const url = new URL(`${config.prowlarrUrl}/${indexerId}/api`)
+      url.searchParams.set('apikey', config.prowlarrApiKey)
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+      try {
+        let res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) })
+        if (res.status === 429) {
+          const retryAfter = parseInt(res.headers.get('Retry-After') ?? '60', 10)
+          console.warn(`[usenet/prowlarr] indexer ${indexerId} rate limited, waiting ${retryAfter}s`)
+          await new Promise(r => setTimeout(r, retryAfter * 1000))
+          res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) })
+        }
+        if (!res.ok) {
+          console.warn(`[usenet/prowlarr] indexer ${indexerId} returned ${res.status}`)
+          resolve([])
+        } else {
+          resolve(parseRssItems(await res.text()))
+        }
+      } catch (e: unknown) {
+        console.warn(`[usenet/prowlarr] indexer ${indexerId} fetch failed:`, (e as Error)?.message ?? e)
+        resolve([])
+      }
+      await new Promise(r => setTimeout(r, MIN_SEARCH_INTERVAL_MS))
+    })
+  })
+  return result
 }
 
 const HD_PATTERN  = /\b(2160p|4k|uhd|1080p)\b/i
