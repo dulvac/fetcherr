@@ -89,6 +89,7 @@ type JellyfinRouteOptions = {
     runtimeTicks: number
     playbackClient: string
   }) => Promise<Array<Record<string, unknown>>>
+  resolveUsenetStream?: (playPath: string, origin: string) => Promise<string | null>
 }
 type ImageKind = 'poster' | 'backdrop' | 'logo'
 type ImageQuery = {
@@ -3322,26 +3323,22 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         return reply.code(409).send({ error: 'Episode not yet available', message: 'Not Yet Aired' })
       }
       const playPath = `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`
-      const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
+      const origin = buildPlaybackOrigin(req.headers)
       const label = ep ? ep.name : `S${epRef.seasonNum}E${epRef.episodeNum}`
       const name = `${show.title} - ${label}`
       const runtimeTicks = (ep?.runtimeMins || 45) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
-        ? await playbackMediaSourcesFor(opts, {
-            itemId: id,
-            sourceId: id,
-            origin: buildPlaybackOrigin(req.headers),
-            playPath,
-            name,
-            runtimeTicks,
-            playbackClient,
-          })
-        : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
-      app.log.info(`playback: "${show.title}" ${label} → ${playUrl}`)
+      const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
+      const playUrl = createSignedPlaybackUrl(origin, playPath)
+      const mediaSources = usenetUrl
+        ? [defaultPlaybackMediaSource(id, name, usenetUrl, runtimeTicks)]
+        : config.mediaSourceSelection
+          ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name, runtimeTicks, playbackClient })
+          : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
+      app.log.info(`playback: "${show.title}" ${label} → ${usenetUrl ?? playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
-      opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
+      if (!usenetUrl) opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3359,24 +3356,20 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
       }
       const playPath = `/play/${movie.imdbId}`
-      const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
+      const origin = buildPlaybackOrigin(req.headers)
       const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
-        ? await playbackMediaSourcesFor(opts, {
-            itemId: id,
-            sourceId: id,
-            origin: buildPlaybackOrigin(req.headers),
-            playPath,
-            name: movie.title,
-            runtimeTicks,
-            playbackClient,
-          })
-        : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-      app.log.info(`playback: "${movie.title}" → ${playUrl}`)
+      const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
+      const playUrl = createSignedPlaybackUrl(origin, playPath)
+      const mediaSources = usenetUrl
+        ? [defaultPlaybackMediaSource(id, movie.title, usenetUrl, runtimeTicks)]
+        : config.mediaSourceSelection
+          ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
+          : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+      app.log.info(`playback: "${movie.title}" → ${usenetUrl ?? playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
-      opts.prewarmPlayback?.(playPath, movie.title)
+      if (!usenetUrl) opts.prewarmPlayback?.(playPath, movie.title)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3394,24 +3387,20 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     }
 
     const playPath = `/play/${movie.imdbId}`
-    const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
+    const origin = buildPlaybackOrigin(req.headers)
     const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
     const playbackClient = playbackClientFromHeaders(req.headers)
-    const mediaSources = config.mediaSourceSelection
-      ? await playbackMediaSourcesFor(opts, {
-          itemId: id,
-          sourceId: id,
-          origin: buildPlaybackOrigin(req.headers),
-          playPath,
-          name: movie.title,
-          runtimeTicks,
-          playbackClient,
-        })
-      : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-    app.log.info(`playback: "${movie.title}" → ${playUrl}`)
+    const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
+    const playUrl = createSignedPlaybackUrl(origin, playPath)
+    const mediaSources = usenetUrl
+      ? [defaultPlaybackMediaSource(id, movie.title, usenetUrl, runtimeTicks)]
+      : config.mediaSourceSelection
+        ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
+        : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+    app.log.info(`playback: "${movie.title}" → ${usenetUrl ?? playUrl}`)
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)
-    opts.prewarmPlayback?.(playPath, movie.title)
+    if (!usenetUrl) opts.prewarmPlayback?.(playPath, movie.title)
     return {
       MediaSources: mediaSources,
       AlternateMediaSources: mediaSources,

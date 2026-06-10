@@ -1809,6 +1809,50 @@ function isDebridConfigured(): boolean {
   return Boolean(config.rdApiKey || config.torBoxApiKey)
 }
 
+const USENET_INDEX_TIMEOUT_MS = 25_000
+
+async function resolveUsenetStream(playPath: string, origin: string): Promise<string | null> {
+  const movieMatch = playPath.match(/^\/play\/(tt\d+)$/)
+  if (movieMatch) {
+    const movie = getMovieByImdbId(movieMatch[1])
+    if (!movie) return null
+    let item = getUsenetMovieItem(movie.tmdbId)
+    if (item?.status === 'indexed' && !usenetItemStale(item)) {
+      return `${origin}/usenet/stream/${item.id}`
+    }
+    if (item?.status === 'failed' && !usenetItemStale(item)) return null
+    app.log.info(`playback: usenet indexing movie ${movieMatch[1]} during PlaybackInfo`)
+    await Promise.race([
+      indexMovieNzb(movie.tmdbId).catch(e => app.log.warn(`playback: usenet index failed for ${movieMatch[1]}: ${e}`)),
+      new Promise<void>(resolve => setTimeout(resolve, USENET_INDEX_TIMEOUT_MS)),
+    ])
+    item = getUsenetMovieItem(movie.tmdbId)
+    if (item?.status === 'indexed') return `${origin}/usenet/stream/${item.id}`
+    return null
+  }
+  const epMatch = playPath.match(/^\/play\/(tt\d+)\/(\d+)\/(\d+)$/)
+  if (epMatch) {
+    const show = getShowByImdbId(epMatch[1])
+    if (!show) return null
+    const s = parseInt(epMatch[2], 10)
+    const e = parseInt(epMatch[3], 10)
+    let item = getUsenetEpisodeItem(show.tmdbId, s, e)
+    if (item?.status === 'indexed' && !usenetItemStale(item)) {
+      return `${origin}/usenet/stream/${item.id}`
+    }
+    if (item?.status === 'failed' && !usenetItemStale(item)) return null
+    app.log.info(`playback: usenet indexing ${epMatch[1]} S${s}E${e} during PlaybackInfo`)
+    await Promise.race([
+      indexEpisodeNzb(show.tmdbId, s, e).catch(e2 => app.log.warn(`playback: usenet index failed for ${epMatch[1]} S${s}E${e}: ${e2}`)),
+      new Promise<void>(resolve => setTimeout(resolve, USENET_INDEX_TIMEOUT_MS)),
+    ])
+    item = getUsenetEpisodeItem(show.tmdbId, s, e)
+    if (item?.status === 'indexed') return `${origin}/usenet/stream/${item.id}`
+    return null
+  }
+  return null
+}
+
 async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
   const movie = getMovieByImdbId(imdbId)
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
@@ -2016,9 +2060,9 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   }
 })
 
-await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources })
-await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources })
-await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources })
+await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources, resolveUsenetStream })
+await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources, resolveUsenetStream })
+await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources, resolveUsenetStream })
 await app.register(uiRoutes)
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
