@@ -1798,13 +1798,22 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
     reply.raw.end()
   }
 })
+const USENET_TTL_MS = 24 * 60 * 60 * 1000
+
+function usenetItemStale(item: { indexedAt: number }): boolean {
+  return Date.now() - item.indexedAt >= USENET_TTL_MS
+}
+
 async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
   const movie = getMovieByImdbId(imdbId)
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetMovieItem(movie.tmdbId)
-  if (!existing) {
+  if (!existing || usenetItemStale(existing)) {
     app.log.info(`play: usenet on-demand indexing movie ${imdbId}`)
     await indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet index failed for ${imdbId}: ${err}`))
+  } else if (existing.status === 'failed') {
+    app.log.info(`play: usenet failed (fresh) for ${imdbId}, falling back to stremio`)
+    return resolveStremioPlayback('movie', imdbId, playbackClient)
   }
   const item = getUsenetMovieItem(movie.tmdbId)
   if (item?.status === 'indexed') {
@@ -1827,9 +1836,12 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   const show = getShowByImdbId(imdbId)
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
-  if (!existing) {
+  if (!existing || usenetItemStale(existing)) {
     app.log.info(`play: usenet on-demand indexing ${label}`)
     await indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet index failed for ${label}: ${err}`))
+  } else if (existing.status === 'failed') {
+    app.log.info(`play: usenet failed (fresh) for ${label}, falling back to stremio`)
+    return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
   }
   const item = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
   if (item?.status === 'indexed') {
