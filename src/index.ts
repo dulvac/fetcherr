@@ -2104,8 +2104,6 @@ async function runSyncInternal() {
   }
 
   markSyncComplete()
-
-  syncUsenetLibrary().catch(err => app.log.error(`Usenet post-sync index failed: ${err}`))
 }
 
 function runSync(): Promise<void> {
