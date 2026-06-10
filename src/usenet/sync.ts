@@ -1,5 +1,5 @@
 import { config } from '../config.js'
-import { getMovieByTmdbId, getShowByTmdbId, listUnindexedMovieTmdbIds, listUnindexedEpisodes, upsertUsenetItem, markUsenetItemFailed } from '../db.js'
+import { getMovieByTmdbId, getShowByTmdbId, listUnindexedMovieTmdbIds, listUnindexedEpisodes, listUsenetPriorityTargets, upsertUsenetItem, markUsenetItemFailed } from '../db.js'
 import { searchMovieNzb, searchEpisodeNzb, isProwlarrConfigured, type NzbResult } from './prowlarr.js'
 import { parseNzb, parseRarDataOffset, buildOffsetTable, estimateDecodedBytesExport, type NzbFile } from './nzb-parser.js'
 import { getNntpPool } from './nntp-pool.js'
@@ -160,18 +160,40 @@ export async function syncUsenetLibrary(): Promise<void> {
   }
 }
 
+export async function syncPriorityUsenetItems(): Promise<void> {
+  if (!isProwlarrConfigured()) return
+
+  const { movies, episodes } = listUsenetPriorityTargets()
+  if (!movies.length && !episodes.length) return
+  console.log(`[usenet/sync] priority: ${movies.length} resume movies, ${episodes.length} next-up/resume episodes`)
+
+  await Promise.allSettled(movies.map(id => indexMovie(id).catch(e => {
+    console.warn(`[usenet/sync] priority movie ${id} error: ${e?.message ?? e}`)
+    markUsenetItemFailed('movie', id, null, null, String(e?.message ?? e))
+  })))
+
+  await Promise.allSettled(episodes.map(ep => indexEpisode(ep.showTmdbId, ep.season, ep.episode).catch(e => {
+    console.warn(`[usenet/sync] priority episode ${ep.showTmdbId} S${ep.season}E${ep.episode} error: ${e?.message ?? e}`)
+    markUsenetItemFailed('episode', ep.showTmdbId, ep.season, ep.episode, String(e?.message ?? e))
+  })))
+}
+
 export function startUsenetSync(): void {
   if (!isNntpConfigured() || !isProwlarrConfigured()) {
     console.log('[usenet/sync] NNTP or Prowlarr not configured, skipping sync')
     return
   }
 
-  const run = () => {
+  const runFull = () => {
     syncUsenetLibrary().catch(e => console.error('[usenet/sync] sync error:', e?.message ?? e))
   }
 
   setTimeout(() => {
-    run()
-    setInterval(run, SYNC_INTERVAL_MS)
+    syncPriorityUsenetItems()
+      .catch(e => console.error('[usenet/sync] priority sync error:', e?.message ?? e))
+      .finally(() => {
+        runFull()
+        setInterval(runFull, SYNC_INTERVAL_MS)
+      })
   }, STARTUP_DELAY_MS)
 }

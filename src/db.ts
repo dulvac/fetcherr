@@ -2263,6 +2263,69 @@ export function countResumeItems(userId = DEFAULT_ADMIN_USER_ID): number {
   return row.n
 }
 
+function decodeMovieId(id: string): number | null {
+  const m = id.match(/^00000000-0000-4000-8000-([0-9a-f]{12})$/i)
+  return m ? parseInt(m[1], 16) : null
+}
+
+function decodeEpisodeId(id: string): { showTmdbId: number; season: number; episode: number } | null {
+  const m = id.match(/^00000000-0000-4000-8003-([0-9a-f]{6})([0-9a-f]{3})([0-9a-f]{3})$/i)
+  return m ? { showTmdbId: parseInt(m[1], 16), season: parseInt(m[2], 16), episode: parseInt(m[3], 16) } : null
+}
+
+export function listUsenetPriorityTargets(): {
+  movies: number[]
+  episodes: Array<{ showTmdbId: number; season: number; episode: number }>
+} {
+  const today = todayIsoDate()
+  const db = getDb()
+
+  // Decode all in-progress and played item IDs
+  const allProgressRows = db.prepare(
+    `SELECT item_id, played, position_ticks FROM user_item_data WHERE played = 1 OR position_ticks >= ?`
+  ).all(MIN_RESUME_TICKS) as Array<{ item_id: string; played: number; position_ticks: number }>
+
+  const resumeMovies: number[] = []
+  const resumeEpisodes: Array<{ showTmdbId: number; season: number; episode: number }> = []
+  const episodeProgress = new Map<number, Array<{ season: number; episode: number; played: boolean }>>()
+
+  for (const row of allProgressRows) {
+    const movie = decodeMovieId(row.item_id)
+    if (movie) {
+      if (!row.played) resumeMovies.push(movie)
+      continue
+    }
+    const ep = decodeEpisodeId(row.item_id)
+    if (ep) {
+      if (!row.played) resumeEpisodes.push(ep)
+      let list = episodeProgress.get(ep.showTmdbId)
+      if (!list) { list = []; episodeProgress.set(ep.showTmdbId, list) }
+      list.push({ season: ep.season, episode: ep.episode, played: !!row.played })
+    }
+  }
+
+  // Next-up: first unplayed aired episode after the max watched/in-progress per show
+  const nextUpEpisodes: Array<{ showTmdbId: number; season: number; episode: number }> = []
+  const resumeEpKeys = new Set(resumeEpisodes.map(e => `${e.showTmdbId}:${e.season}:${e.episode}`))
+  for (const [showTmdbId, progress] of episodeProgress) {
+    const maxOrd = progress.reduce((m, e) => Math.max(m, e.season * 10000 + e.episode), 0)
+    const nextRows = db.prepare(
+      `SELECT season_number AS s, episode_number AS e FROM episodes
+       WHERE show_tmdb_id = ? AND air_date != '' AND air_date < ?
+         AND (season_number * 10000 + episode_number) > ?
+       ORDER BY season_number ASC, episode_number ASC LIMIT 1`
+    ).get(showTmdbId, today, maxOrd) as { s: number; e: number } | undefined
+    if (nextRows && !resumeEpKeys.has(`${showTmdbId}:${nextRows.s}:${nextRows.e}`)) {
+      nextUpEpisodes.push({ showTmdbId, season: nextRows.s, episode: nextRows.e })
+    }
+  }
+
+  return {
+    movies: resumeMovies,
+    episodes: [...resumeEpisodes, ...nextUpEpisodes],
+  }
+}
+
 export function getAllPlayedItemIds(userId = DEFAULT_ADMIN_USER_ID): Set<string> {
   const rows = getDb().prepare(`
     SELECT item_id
