@@ -1840,7 +1840,12 @@ async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promis
   const movie = getMovieByImdbId(imdbId)
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetMovieItem(movie.tmdbId)
-  if (existing?.status === 'indexed' && !usenetItemStale(existing)) {
+  if (existing?.status === 'indexed') {
+    // Serve the existing item immediately; re-index in background if stale
+    if (usenetItemStale(existing)) {
+      app.log.info(`play: usenet item stale for ${imdbId}, re-indexing in background`)
+      indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet background reindex failed for ${imdbId}: ${err}`))
+    }
     const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
     app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
     return { url, filename, provider: 'Usenet' }
@@ -1874,7 +1879,12 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   const show = getShowByImdbId(imdbId)
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
-  if (existing?.status === 'indexed' && !usenetItemStale(existing)) {
+  if (existing?.status === 'indexed') {
+    // Serve the existing item immediately; re-index in background if stale
+    if (usenetItemStale(existing)) {
+      app.log.info(`play: usenet item stale for ${label}, re-indexing in background`)
+      indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet background reindex failed for ${label}: ${err}`))
+    }
     const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
     app.log.info(`play: usenet resolved ${filename} for ${label}`)
     return { url, filename, provider: 'Usenet' }

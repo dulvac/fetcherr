@@ -63,6 +63,11 @@ class NntpConnection {
 async function openConnection(): Promise<NntpConnection> {
   return new Promise((resolve, reject) => {
     let socket: net.Socket
+    let settled = false
+
+    const handshakeTimeout = setTimeout(() => {
+      if (!settled) { socket?.destroy(); reject(new NntpError('NNTP connection timed out')) }
+    }, 20_000)
 
     const onConnect = async () => {
       const conn = new NntpConnection(socket)
@@ -80,8 +85,15 @@ async function openConnection(): Promise<NntpConnection> {
           throw new NntpError(`NNTP auth user failed: ${authUserResp}`)
         }
 
+        clearTimeout(handshakeTimeout)
+        // Disable inactivity timeout — pool connections live until the server closes them.
+        // We detect server-side closes via the 'close' event (sets _closed = true).
+        socket.setTimeout(0)
+        settled = true
         resolve(conn)
       } catch (err) {
+        clearTimeout(handshakeTimeout)
+        settled = true
         socket.destroy()
         reject(err)
       }
@@ -92,14 +104,12 @@ async function openConnection(): Promise<NntpConnection> {
         { host: config.nntpHost, port: config.nntpPort, rejectUnauthorized: true },
         onConnect,
       )
-      tlsSocket.on('error', reject)
+      tlsSocket.on('error', (err) => { if (!settled) { settled = true; clearTimeout(handshakeTimeout); reject(err) } })
       socket = tlsSocket
     } else {
       socket = net.createConnection({ host: config.nntpHost, port: config.nntpPort }, onConnect)
-      socket.on('error', reject)
+      socket.on('error', (err) => { if (!settled) { settled = true; clearTimeout(handshakeTimeout); reject(err) } })
     }
-
-    socket.setTimeout(60_000, () => { socket.destroy(); reject(new NntpError('NNTP connection timed out')) })
   })
 }
 
@@ -154,14 +164,18 @@ class NntpPool {
 
   async fetchArticleBody(messageId: string): Promise<Buffer> {
     const conn = await this.acquire()
+    // Per-article timeout: destroy the connection if the server stalls mid-transfer
+    const fetchTimer = setTimeout(() => conn.destroy(), 120_000)
     try {
       conn.send(`BODY <${messageId}>`)
       const resp = await conn.readLine()
       if (!resp.startsWith('222')) throw new NntpError(`NNTP BODY failed: ${resp}`)
       const body = await conn.readMultilineBody()
+      clearTimeout(fetchTimer)
       this.release(conn)
       return body
     } catch (err) {
+      clearTimeout(fetchTimer)
       conn.destroy()
       this.active--
       throw err
