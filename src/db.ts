@@ -1268,16 +1268,11 @@ export function getEpisodesForSeason(showTmdbId: number, seasonNumber: number): 
 }
 
 export function getAiredEpisodesForSeason(showTmdbId: number, seasonNumber: number): Episode[] {
+  const today = todayIsoDate()
   return (getDb().prepare(
-    `SELECT e.* FROM episodes e
-     INNER JOIN usenet_items ui ON ui.media_type = 'episode'
-       AND ui.tmdb_id = e.show_tmdb_id
-       AND ui.season = e.season_number
-       AND ui.episode = e.episode_number
-       AND ui.status = 'indexed'
-     WHERE e.show_tmdb_id = ? AND e.season_number = ?
-     ORDER BY e.episode_number ASC`
-  ).all(showTmdbId, seasonNumber) as Record<string, unknown>[]).map(row2episode)
+    `SELECT * FROM episodes WHERE show_tmdb_id = ? AND season_number = ?
+     AND air_date != '' AND air_date < ? ORDER BY episode_number ASC`
+  ).all(showTmdbId, seasonNumber, today) as Record<string, unknown>[]).map(row2episode)
 }
 
 export function getEpisodesForShow(showTmdbId: number): Episode[] {
