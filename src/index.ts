@@ -1597,6 +1597,42 @@ async function writeChunk(sock: RawSocket, data: Buffer): Promise<boolean> {
   return !sock.destroyed
 }
 
+const NNTP_PREFETCH = 4
+
+async function streamSegmentTasks(
+  pool: ReturnType<typeof getNntpPool>,
+  sock: RawSocket,
+  tasks: Array<{ messageId: string; stripBytes: number }>,
+  log: typeof app.log,
+  itemId: string,
+  maxBytes = Infinity,
+): Promise<void> {
+  let sent = 0
+  const inflight: Promise<Buffer>[] = []
+
+  // Prime prefetch window
+  for (let i = 0; i < Math.min(NNTP_PREFETCH, tasks.length); i++) {
+    inflight.push(pool.fetchArticleBody(tasks[i].messageId).then(body => ydecode(body)))
+  }
+
+  for (let i = 0; i < tasks.length; i++) {
+    if (sent >= maxBytes) break
+    // Launch next fetch to keep window full
+    const next = i + NNTP_PREFETCH
+    if (next < tasks.length) {
+      inflight.push(pool.fetchArticleBody(tasks[next].messageId).then(body => ydecode(body)))
+    }
+    log.info(`usenet: seg ${i + 1}/${tasks.length} item ${itemId}`)
+    const decoded = await inflight.shift()!
+    const { stripBytes } = tasks[i]
+    let data = stripBytes > 0 ? (decoded.length > stripBytes ? decoded.slice(stripBytes) : Buffer.alloc(0)) : decoded
+    const remaining = maxBytes - sent
+    if (data.length > remaining) data = data.slice(0, remaining)
+    sent += data.length
+    if (data.length > 0 && !await writeChunk(sock, data)) return
+  }
+}
+
 async function streamDirectSegments(
   pool: ReturnType<typeof getNntpPool>,
   sock: RawSocket,
@@ -1607,21 +1643,11 @@ async function streamDirectSegments(
   log: typeof app.log,
   maxBytes = Infinity,
 ): Promise<void> {
-  let sent = 0
-  for (let i = startSegment; i < segments.length; i++) {
-    if (sent >= maxBytes) break
-    const seg = segments[i]
-    log.info(`usenet: segment ${seg.number}/${segments.length} item ${itemId}`)
-    const body = await pool.fetchArticleBody(seg.messageId)
-    const decoded = ydecode(body)
-    let data = i === startSegment && startByteWithinSegment > 0
-      ? decoded.slice(startByteWithinSegment)
-      : decoded
-    const remaining = maxBytes - sent
-    if (data.length > remaining) data = data.slice(0, remaining)
-    sent += data.length
-    if (!await writeChunk(sock, data)) break
-  }
+  const tasks = segments.slice(startSegment).map((seg, idx) => ({
+    messageId: seg.messageId,
+    stripBytes: idx === 0 ? startByteWithinSegment : 0,
+  }))
+  await streamSegmentTasks(pool, sock, tasks, log, itemId, maxBytes)
 }
 
 async function streamRarVolumes(
@@ -1633,15 +1659,13 @@ async function streamRarVolumes(
   itemId: string,
   maxBytes = Infinity,
 ): Promise<void> {
-  let sent = 0
   // Build cumulative video-data start offset per volume
   const volDataStart: number[] = []
   let cum = 0
   for (const vol of volumes) {
     volDataStart.push(cum)
     const volDecoded = vol.segments.reduce((s, seg) => {
-      const bytes = seg.bytes
-      return s + Math.max(0, Math.floor((bytes - 200) * 128 / 130))
+      return s + Math.max(0, Math.floor((seg.bytes - 200) * 128 / 130))
     }, 0)
     cum += Math.max(0, volDecoded - vol.headerBytes)
   }
@@ -1654,40 +1678,25 @@ async function streamRarVolumes(
 
   const posInVolData = rangeStart - volDataStart[startVol]
   const rawPosInVol  = posInVolData + volumes[startVol].headerBytes
-
-  // Find starting segment within startVol
   const startVolOffsets = buildOffsetTable(volumes[startVol].segments)
   const startSeg = segmentIndexForOffset(startVolOffsets, rawPosInVol)
   const startByteWithinSeg = rawPosInVol - startVolOffsets[startSeg]
 
+  // Flatten all segments across volumes into a task list
+  const tasks: Array<{ messageId: string; stripBytes: number }> = []
   for (let vi = startVol; vi < volumes.length; vi++) {
-    if (sent >= maxBytes) break
     const vol = volumes[vi]
     const isStartVol = vi === startVol
     const segStart = isStartVol ? startSeg : 0
-
     for (let si = segStart; si < vol.segments.length; si++) {
-      if (sent >= maxBytes) break
-      const seg = vol.segments[si]
-      log.info(`usenet: rar vol ${vi} seg ${si + 1}/${vol.segments.length} item ${itemId}`)
-      const body = await pool.fetchArticleBody(seg.messageId)
-      const decoded = ydecode(body)
-
-      let data: Buffer
-      if (isStartVol && si === startSeg) {
-        data = decoded.slice(startByteWithinSeg)
-      } else if (!isStartVol && si === 0) {
-        data = decoded.length > vol.headerBytes ? decoded.slice(vol.headerBytes) : Buffer.alloc(0)
-      } else {
-        data = decoded
-      }
-
-      const remaining = maxBytes - sent
-      if (data.length > remaining) data = data.slice(0, remaining)
-      sent += data.length
-      if (data.length > 0 && !await writeChunk(sock, data)) return
+      let stripBytes = 0
+      if (isStartVol && si === startSeg) stripBytes = startByteWithinSeg
+      else if (!isStartVol && si === 0) stripBytes = vol.headerBytes
+      tasks.push({ messageId: vol.segments[si].messageId, stripBytes })
     }
   }
+
+  await streamSegmentTasks(pool, sock, tasks, log, itemId, maxBytes)
 }
 
 // ── Stream endpoint ─────────────────────────────────────────────────────────
