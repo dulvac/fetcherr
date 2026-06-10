@@ -22,7 +22,7 @@ import {
 import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription, getUsenetItemById, getUsenetMovieItem, getUsenetEpisodeItem } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
-import { createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
+import { buildPlaybackOrigin, createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
 import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStream } from './usenet/resolve.js'
 import { getNntpPool } from './usenet/nntp-pool.js'
 import { ydecode } from './usenet/ydecode.js'
@@ -1882,6 +1882,16 @@ async function resolvePlaybackCandidate(token: string | undefined, playPath: str
   )
 }
 
+function usenetStreamRedirectUrl(url: string, headers: Record<string, string | undefined>): string {
+  if (!url.includes('/usenet/stream/')) return url
+  try {
+    const path = new URL(url).pathname
+    return buildPlaybackOrigin(headers) + path
+  } catch {
+    return url
+  }
+}
+
 app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
   const { mediaType, externalId } = req.params as { mediaType: StremioMediaType; externalId: string }
   const query = req.query as { token?: string; expires?: string; candidate?: string } | undefined
@@ -1953,7 +1963,7 @@ app.get('/play/:imdbId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(usenetStreamRedirectUrl(resolved.url, req.headers as Record<string, string | undefined>), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1994,7 +2004,7 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(usenetStreamRedirectUrl(resolved.url, req.headers as Record<string, string | undefined>), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
