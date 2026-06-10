@@ -1736,6 +1736,7 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
       rangeEndRequested = m[2] ? parseInt(m[2], 10) : null
     }
   }
+  app.log.info(`usenet: stream ${itemId} range=${rangeHeader ?? 'none'} start=${rangeStart} totalBytes=${item.totalBytes}`)
 
   const rangeEnd = rangeEndRequested ?? (item.totalBytes - 1)
   // For open-ended ranges, totalBytes is an estimate so we omit Content-Length
