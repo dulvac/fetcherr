@@ -976,22 +976,87 @@ function sortDirection(sortOrder?: string): 'ASC' | 'DESC' {
   return normalized === 'asc' || normalized === 'ascending' ? 'ASC' : 'DESC'
 }
 
-function movieAvailabilityWhere(_availableOnly: boolean): string {
-  return `WHERE NOT EXISTS (
+function movieAvailabilityWhere(availableOnly: boolean): string {
+  const clauses = [
+    `EXISTS (
+      SELECT 1
+      FROM source_items
+      WHERE source_items.media_type = 'movie'
+        AND source_items.tmdb_id = movies.tmdb_id
+    )`,
+    `NOT EXISTS (
       SELECT 1
       FROM hidden_library_items
       WHERE hidden_library_items.media_type = 'movie'
         AND hidden_library_items.tmdb_id = movies.tmdb_id
+    )`,
+  ]
+  if (availableOnly) {
+    const effectiveReleaseMode = `COALESCE((
+      SELECT mode
+      FROM movie_release_preferences
+      WHERE movie_release_preferences.movie_tmdb_id = movies.tmdb_id
+    ), ${sqlStringLiteral(config.movieReleaseMode)})`
+    const theatricalAvailability = `(
+      (release_date != '' AND release_date <= date('now'))
+      OR (
+        release_date = ''
+        AND digital_release_date != ''
+        AND digital_release_date <= date('now')
+      )
     )`
+    const digitalAvailability = `(
+      (digital_release_date != '' AND digital_release_date <= date('now'))
+      OR (
+        digital_release_date = ''
+        AND release_date != ''
+        AND date(release_date, '+45 day') <= date('now')
+      )
+    )`
+    clauses.push(`(
+        EXISTS (
+          SELECT 1
+          FROM manual_movie_availability_overrides
+          WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
+            AND manual_movie_availability_overrides.ignore_release_gate = 1
+        )
+        OR (
+          CASE ${effectiveReleaseMode}
+            WHEN 'theatrical' THEN ${theatricalAvailability}
+            ELSE ${digitalAvailability}
+          END
+        )
+      )`)
+  }
+  return `WHERE ${clauses.join('\n  AND ')}`
 }
 
-function showAvailabilityWhere(_availableOnly: boolean): string {
-  return `WHERE NOT EXISTS (
+function showAvailabilityWhere(availableOnly: boolean): string {
+  const clauses = [
+    `EXISTS (
+      SELECT 1
+      FROM source_items
+      WHERE source_items.media_type = 'show'
+        AND source_items.tmdb_id = shows.tmdb_id
+    )`,
+    `NOT EXISTS (
       SELECT 1
       FROM hidden_library_items
       WHERE hidden_library_items.media_type = 'show'
         AND hidden_library_items.tmdb_id = shows.tmdb_id
-    )`
+    )`,
+  ]
+  if (availableOnly) {
+    const today = sqlStringLiteral(todayIsoDate())
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM episodes
+      WHERE episodes.show_tmdb_id = shows.tmdb_id
+        AND episodes.air_date != ''
+        AND episodes.air_date < ${today}
+    )`)
+  }
+  return `WHERE ${clauses.join('\n  AND ')}`
 }
 
 export function listMovies(opts: ListOpts = {}): Movie[] {
