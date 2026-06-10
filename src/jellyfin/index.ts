@@ -2649,11 +2649,21 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       runtimeTicks: number
     },
   ) {
-    if (!config.mediaSourceSelection) return item
+    if (!headers) return item
+    const playPath = `/play/${input.imdbId}`
+    if (!config.mediaSourceSelection) {
+      const normalizedHeaders = Object.fromEntries(
+        Object.entries(headers).map(([k, v]) => [k, Array.isArray(v) ? v[0] ?? '' : v ?? '']),
+      )
+      const origin = buildPlaybackOrigin(normalizedHeaders)
+      const playUrl = createSignedPlaybackUrl(origin, playPath)
+      const mediaSources = [defaultPlaybackMediaSource(input.sourceId, input.name, playUrl, input.runtimeTicks)]
+      return { ...item, MediaSources: mediaSources, AlternateMediaSources: mediaSources, MediaSourceCount: 1 }
+    }
     return addDetailMediaSources(item, headers, {
       itemId: input.itemId,
       sourceId: input.sourceId,
-      playPath: `/play/${input.imdbId}`,
+      playPath,
       name: input.name,
       runtimeTicks: input.runtimeTicks,
     })
@@ -2782,15 +2792,27 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       }
       if (!ep) return reply.code(404).send({ error: 'Not found' })
       if (!isEpisodeVisibleToLibrary(ep)) return reply.code(404).send({ error: 'Not found' })
-      const item = episodeToItem(ep, show, currentUser.id) as Record<string, unknown>
-      if (!config.mediaSourceSelection || !show.imdbId) return item
+      if (!show.imdbId) return episodeToItem(ep, show, currentUser.id)
       const playPath = `/play/${show.imdbId}/${ep.seasonNumber}/${ep.episodeNumber}`
+      const epName = `${show.title} - ${ep.name || `S${ep.seasonNumber}E${ep.episodeNumber}`}`
+      const epTicks = (ep.runtimeMins || 45) * 60 * 10_000_000
+      const item = episodeToItem(ep, show, currentUser.id) as Record<string, unknown>
+      if (!config.mediaSourceSelection) {
+        if (!headers) return item
+        const normalizedHeaders = Object.fromEntries(
+          Object.entries(headers).map(([k, v]) => [k, Array.isArray(v) ? v[0] ?? '' : v ?? '']),
+        )
+        const origin = buildPlaybackOrigin(normalizedHeaders)
+        const playUrl = createSignedPlaybackUrl(origin, playPath)
+        const mediaSources = [defaultPlaybackMediaSource(id, epName, playUrl, epTicks)]
+        return { ...item, MediaSources: mediaSources, AlternateMediaSources: mediaSources, MediaSourceCount: 1 }
+      }
       return addDetailMediaSources(item, headers, {
         itemId: id,
         sourceId: id,
         playPath,
-        name: `${show.title} - ${ep.name || `S${ep.seasonNumber}E${ep.episodeNumber}`}`,
-        runtimeTicks: (ep.runtimeMins || 45) * 60 * 10_000_000,
+        name: epName,
+        runtimeTicks: epTicks,
       })
     }
 
