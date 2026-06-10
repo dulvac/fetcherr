@@ -1560,7 +1560,7 @@ async function buildPlaybackMediaSources(input: {
       if (usenetItem?.status === 'indexed') {
         const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
         const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
-        return [{ ...src, Protocol: 'File', DirectStreamUrl: streamUrl }]
+        return [{ ...src, DirectStreamUrl: streamUrl }]
       }
     }
   }
@@ -1572,7 +1572,7 @@ async function buildPlaybackMediaSources(input: {
       if (usenetItem?.status === 'indexed') {
         const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
         const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
-        return [{ ...src, Protocol: 'File', DirectStreamUrl: streamUrl }]
+        return [{ ...src, DirectStreamUrl: streamUrl }]
       }
     }
   }
