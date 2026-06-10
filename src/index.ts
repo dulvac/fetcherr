@@ -1804,28 +1804,11 @@ function usenetItemStale(item: { indexedAt: number }): boolean {
   return Date.now() - item.indexedAt >= USENET_TTL_MS
 }
 
-// Deduplicate concurrent background indexing calls for the same item
-const activeUsenetIndexing = new Map<string, Promise<void>>()
-
-function triggerMovieIndexing(tmdbId: number, imdbId: string): void {
-  const key = `movie:${tmdbId}`
-  if (activeUsenetIndexing.has(key)) return
-  const job = indexMovieNzb(tmdbId)
-    .catch(err => app.log.warn(`play: usenet background index failed for ${imdbId}: ${err}`))
-    .finally(() => activeUsenetIndexing.delete(key))
-  activeUsenetIndexing.set(key, job)
+function isDebridConfigured(): boolean {
+  return Boolean(config.rdApiKey || config.torBoxApiKey)
 }
 
-function triggerEpisodeIndexing(showTmdbId: number, season: number, episodeNumber: number, label: string): void {
-  const key = `episode:${showTmdbId}:${season}:${episodeNumber}`
-  if (activeUsenetIndexing.has(key)) return
-  const job = indexEpisodeNzb(showTmdbId, season, episodeNumber)
-    .catch(err => app.log.warn(`play: usenet background index failed for ${label}: ${err}`))
-    .finally(() => activeUsenetIndexing.delete(key))
-  activeUsenetIndexing.set(key, job)
-}
-
-async function resolveMoviePlayback(imdbId: string, _playbackClient = ''): Promise<PlayResolution> {
+async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
   const movie = getMovieByImdbId(imdbId)
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetMovieItem(movie.tmdbId)
@@ -1835,13 +1818,21 @@ async function resolveMoviePlayback(imdbId: string, _playbackClient = ''): Promi
     return { url, filename, provider: 'Usenet' }
   }
   if (existing?.status === 'failed' && !usenetItemStale(existing)) {
-    app.log.info(`play: usenet no NZB for ${imdbId} (fresh failure)`)
+    app.log.info(`play: usenet no NZB for ${imdbId}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+    if (isDebridConfigured()) return resolveStremioPlayback('movie', imdbId, playbackClient)
     throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
   }
-  // Not indexed or stale: fire background indexing, respond immediately
-  app.log.info(`play: usenet triggering background indexing for ${imdbId}`)
-  triggerMovieIndexing(movie.tmdbId, imdbId)
-  throw new PlaybackResolutionError('Indexing', 503, { error: 'Indexing', message: 'NZB indexing in progress, try again shortly' })
+  app.log.info(`play: usenet on-demand indexing movie ${imdbId}`)
+  await indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet index failed for ${imdbId}: ${err}`))
+  const item = getUsenetMovieItem(movie.tmdbId)
+  if (item?.status === 'indexed') {
+    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
+    app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
+    return { url, filename, provider: 'Usenet' }
+  }
+  app.log.info(`play: usenet unavailable for ${imdbId}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+  if (isDebridConfigured()) return resolveStremioPlayback('movie', imdbId, playbackClient)
+  throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
 }
 
 async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: string, playbackClient = ''): Promise<PlayResolution> {
@@ -1850,7 +1841,7 @@ async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: s
   return resolvePlayableStream(streams, `${mediaType} ${externalId}`, playPath, undefined, true)
 }
 
-async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, _playbackClient = ''): Promise<PlayResolution> {
+async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, playbackClient = ''): Promise<PlayResolution> {
   const label = `${imdbId} S${season}E${episodeNumber}`
   const show = getShowByImdbId(imdbId)
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
@@ -1861,13 +1852,21 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
     return { url, filename, provider: 'Usenet' }
   }
   if (existing?.status === 'failed' && !usenetItemStale(existing)) {
-    app.log.info(`play: usenet no NZB for ${label} (fresh failure)`)
+    app.log.info(`play: usenet no NZB for ${label}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+    if (isDebridConfigured()) return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
     throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
   }
-  // Not indexed or stale: fire background indexing, respond immediately
-  app.log.info(`play: usenet triggering background indexing for ${label}`)
-  triggerEpisodeIndexing(show.tmdbId, season, episodeNumber, label)
-  throw new PlaybackResolutionError('Indexing', 503, { error: 'Indexing', message: 'NZB indexing in progress, try again shortly' })
+  app.log.info(`play: usenet on-demand indexing ${label}`)
+  await indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet index failed for ${label}: ${err}`))
+  const item = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
+  if (item?.status === 'indexed') {
+    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
+    app.log.info(`play: usenet resolved ${filename} for ${label}`)
+    return { url, filename, provider: 'Usenet' }
+  }
+  app.log.info(`play: usenet unavailable for ${label}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+  if (isDebridConfigured()) return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
+  throw new PlaybackResolutionError('No NZB available', 404, { error: 'No NZB available', message: 'No NZB Found' })
 }
 
 async function resolvePlaybackCandidate(token: string | undefined, playPath: string): Promise<PlayResolution | null> {
