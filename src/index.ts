@@ -1552,32 +1552,6 @@ async function buildPlaybackMediaSources(input: {
   runtimeTicks: number
   playbackClient: string
 }) {
-  // For usenet items, return direct stream URL — skip the /play/ redirect chain
-  const movieMatch = input.playPath.match(/^\/play\/(tt\d+)$/)
-  if (movieMatch) {
-    const movie = getMovieByImdbId(movieMatch[1])
-    if (movie) {
-      const usenetItem = getUsenetMovieItem(movie.tmdbId)
-      if (usenetItem?.status === 'indexed') {
-        const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
-        const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
-        return [{ ...src, DirectStreamUrl: streamUrl }]
-      }
-    }
-  }
-  const epMatch = input.playPath.match(/^\/play\/(tt\d+)\/(\d+)\/(\d+)$/)
-  if (epMatch) {
-    const show = getShowByImdbId(epMatch[1])
-    if (show) {
-      const usenetItem = getUsenetEpisodeItem(show.tmdbId, parseInt(epMatch[2], 10), parseInt(epMatch[3], 10))
-      if (usenetItem?.status === 'indexed') {
-        const streamUrl = `${config.serverUrl}/usenet/stream/${usenetItem.id}`
-        const src = playbackMediaSource(input.sourceId, input.name, streamUrl, input.runtimeTicks)
-        return [{ ...src, DirectStreamUrl: streamUrl }]
-      }
-    }
-  }
-
   const fallbackUrl = createSignedPlaybackUrl(input.origin, input.playPath)
   const fallbackSource = playbackMediaSource(input.sourceId, input.name, fallbackUrl, input.runtimeTicks)
 

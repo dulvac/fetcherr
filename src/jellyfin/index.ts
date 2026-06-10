@@ -3328,17 +3328,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const name = `${show.title} - ${label}`
       const runtimeTicks = (ep?.runtimeMins || 45) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
       const playUrl = createSignedPlaybackUrl(origin, playPath)
-      const mediaSources = usenetUrl
-        ? [defaultPlaybackMediaSource(id, name, usenetUrl, runtimeTicks)]
-        : config.mediaSourceSelection
-          ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name, runtimeTicks, playbackClient })
-          : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
-      app.log.info(`playback: "${show.title}" ${label} → ${usenetUrl ?? playUrl}`)
+      const mediaSources = config.mediaSourceSelection
+        ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name, runtimeTicks, playbackClient })
+        : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
+      app.log.info(`playback: "${show.title}" ${label} → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
-      if (!usenetUrl) opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
+      opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3359,17 +3356,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const origin = buildPlaybackOrigin(req.headers)
       const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
       const playUrl = createSignedPlaybackUrl(origin, playPath)
-      const mediaSources = usenetUrl
-        ? [defaultPlaybackMediaSource(id, movie.title, usenetUrl, runtimeTicks)]
-        : config.mediaSourceSelection
-          ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
-          : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-      app.log.info(`playback: "${movie.title}" → ${usenetUrl ?? playUrl}`)
+      const mediaSources = config.mediaSourceSelection
+        ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
+        : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+      app.log.info(`playback: "${movie.title}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
-      if (!usenetUrl) opts.prewarmPlayback?.(playPath, movie.title)
+      opts.prewarmPlayback?.(playPath, movie.title)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3390,17 +3384,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const origin = buildPlaybackOrigin(req.headers)
     const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
     const playbackClient = playbackClientFromHeaders(req.headers)
-    const usenetUrl = await opts.resolveUsenetStream?.(playPath, origin) ?? null
     const playUrl = createSignedPlaybackUrl(origin, playPath)
-    const mediaSources = usenetUrl
-      ? [defaultPlaybackMediaSource(id, movie.title, usenetUrl, runtimeTicks)]
-      : config.mediaSourceSelection
-        ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
-        : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-    app.log.info(`playback: "${movie.title}" → ${usenetUrl ?? playUrl}`)
+    const mediaSources = config.mediaSourceSelection
+      ? await playbackMediaSourcesFor(opts, { itemId: id, sourceId: id, origin, playPath, name: movie.title, runtimeTicks, playbackClient })
+      : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+    app.log.info(`playback: "${movie.title}" → ${playUrl}`)
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)
-    if (!usenetUrl) opts.prewarmPlayback?.(playPath, movie.title)
+    opts.prewarmPlayback?.(playPath, movie.title)
     return {
       MediaSources: mediaSources,
       AlternateMediaSources: mediaSources,
