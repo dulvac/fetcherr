@@ -23,10 +23,7 @@ import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeaso
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
-import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStream } from './usenet/resolve.js'
-import { getNntpPool } from './usenet/nntp-pool.js'
-import { ydecode } from './usenet/ydecode.js'
-import { segmentIndexForOffset, buildOffsetTable } from './usenet/nzb-parser.js'
+import { isUsenetConfigured, resolveUsenetMovieStream, resolveUsenetEpisodeStream, buildNzbDavStreamUrl } from './usenet/resolve.js'
 import { startUsenetSync, syncUsenetLibrary, indexMovie as indexMovieNzb, indexEpisode as indexEpisodeNzb } from './usenet/sync.js'
 
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
@@ -1580,210 +1577,15 @@ async function buildPlaybackMediaSources(input: {
   }
 }
 
-// ── Usenet streaming endpoint ─────────────────────────────────────────────────
-
-// ── NNTP streaming helpers ──────────────────────────────────────────────────
-
-interface RarVolume {
-  headerBytes: number
-  segments: Array<{ messageId: string; bytes: number; number: number }>
-}
-
-type RawSocket = NodeJS.WritableStream & { destroyed?: boolean; once(e: 'drain', fn: () => void): unknown }
-
-async function writeChunk(sock: RawSocket, data: Buffer): Promise<boolean> {
-  const canContinue = sock.write(data)
-  if (!canContinue) await new Promise<void>(resolve => sock.once('drain', resolve))
-  return !sock.destroyed
-}
-
-// Use up to half the connection pool for in-flight segment fetches.
-// Higher values saturate more connections and reduce initial buffering time.
-const NNTP_PREFETCH = Math.max(4, Math.floor(config.nntpConnections / 2))
-
-async function streamSegmentTasks(
-  pool: ReturnType<typeof getNntpPool>,
-  sock: RawSocket,
-  tasks: Array<{ messageId: string; stripBytes: number }>,
-  log: typeof app.log,
-  itemId: string,
-  maxBytes = Infinity,
-): Promise<void> {
-  let sent = 0
-  const inflight: Promise<Buffer>[] = []
-
-  // Prime prefetch window
-  for (let i = 0; i < Math.min(NNTP_PREFETCH, tasks.length); i++) {
-    inflight.push(pool.fetchArticleBody(tasks[i].messageId).then(body => ydecode(body)))
-  }
-
-  for (let i = 0; i < tasks.length; i++) {
-    if (sent >= maxBytes) break
-    // Launch next fetch to keep window full
-    const next = i + NNTP_PREFETCH
-    if (next < tasks.length) {
-      inflight.push(pool.fetchArticleBody(tasks[next].messageId).then(body => ydecode(body)))
-    }
-    log.info(`usenet: seg ${i + 1}/${tasks.length} item ${itemId}`)
-    const decoded = await inflight.shift()!
-    const { stripBytes } = tasks[i]
-    let data = stripBytes > 0 ? (decoded.length > stripBytes ? decoded.slice(stripBytes) : Buffer.alloc(0)) : decoded
-    const remaining = maxBytes - sent
-    if (data.length > remaining) data = data.slice(0, remaining)
-    sent += data.length
-    if (data.length > 0 && !await writeChunk(sock, data)) return
-  }
-}
-
-async function streamDirectSegments(
-  pool: ReturnType<typeof getNntpPool>,
-  sock: RawSocket,
-  segments: Array<{ messageId: string; bytes: number; number: number }>,
-  startSegment: number,
-  startByteWithinSegment: number,
-  itemId: string,
-  log: typeof app.log,
-  maxBytes = Infinity,
-): Promise<void> {
-  const tasks = segments.slice(startSegment).map((seg, idx) => ({
-    messageId: seg.messageId,
-    stripBytes: idx === 0 ? startByteWithinSegment : 0,
-  }))
-  await streamSegmentTasks(pool, sock, tasks, log, itemId, maxBytes)
-}
-
-async function streamRarVolumes(
-  pool: ReturnType<typeof getNntpPool>,
-  sock: RawSocket,
-  volumes: RarVolume[],
-  rangeStart: number,
-  log: typeof app.log,
-  itemId: string,
-  maxBytes = Infinity,
-): Promise<void> {
-  // Build cumulative video-data start offset per volume
-  const volDataStart: number[] = []
-  let cum = 0
-  for (const vol of volumes) {
-    volDataStart.push(cum)
-    const volDecoded = vol.segments.reduce((s, seg) => {
-      return s + Math.max(0, Math.floor((seg.bytes - 200) * 128 / 130))
-    }, 0)
-    cum += Math.max(0, volDecoded - vol.headerBytes)
-  }
-
-  // Find starting volume and position
-  let startVol = 0
-  for (let v = volumes.length - 1; v >= 0; v--) {
-    if (volDataStart[v] <= rangeStart) { startVol = v; break }
-  }
-
-  const posInVolData = rangeStart - volDataStart[startVol]
-  const rawPosInVol  = posInVolData + volumes[startVol].headerBytes
-  const startVolOffsets = buildOffsetTable(volumes[startVol].segments)
-  const startSeg = segmentIndexForOffset(startVolOffsets, rawPosInVol)
-  const startByteWithinSeg = rawPosInVol - startVolOffsets[startSeg]
-
-  // Flatten all segments across volumes into a task list
-  const tasks: Array<{ messageId: string; stripBytes: number }> = []
-  for (let vi = startVol; vi < volumes.length; vi++) {
-    const vol = volumes[vi]
-    const isStartVol = vi === startVol
-    const segStart = isStartVol ? startSeg : 0
-    for (let si = segStart; si < vol.segments.length; si++) {
-      let stripBytes = 0
-      if (isStartVol && si === startSeg) stripBytes = startByteWithinSeg
-      else if (!isStartVol && si === 0) stripBytes = vol.headerBytes
-      tasks.push({ messageId: vol.segments[si].messageId, stripBytes })
-    }
-  }
-
-  await streamSegmentTasks(pool, sock, tasks, log, itemId, maxBytes)
-}
-
-// ── Stream endpoint ─────────────────────────────────────────────────────────
-
-app.head('/usenet/stream/:itemId', async (req, reply) => {
-  const { itemId } = req.params as { itemId: string }
-  const item = getUsenetItemById(parseInt(itemId, 10))
-  if (!item || item.status !== 'indexed') return reply.code(404).send()
-  const ext = item.videoFilename.split('.').pop()?.toLowerCase() ?? 'mkv'
-  const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
-  reply.raw.writeHead(200, {
-    'Content-Type': contentType,
-    'Accept-Ranges': 'bytes',
-    'Content-Length': String(item.totalBytes),
-    'Cache-Control': 'no-cache',
-  })
-  reply.raw.end()
-})
+// ── Usenet stream endpoint — 302 redirect to NzbDav WebDAV ──────────────────
 
 app.get('/usenet/stream/:itemId', async (req, reply) => {
   const { itemId } = req.params as { itemId: string }
   const item = getUsenetItemById(parseInt(itemId, 10))
-  if (!item || item.status !== 'indexed') return reply.code(404).send({ error: 'Stream not found' })
-
-  const ext = item.videoFilename.split('.').pop()?.toLowerCase() ?? 'mkv'
-  const contentType = ext === 'mp4' || ext === 'm4v' ? 'video/mp4' : 'video/x-matroska'
-
-  const rangeHeader = (req.headers as Record<string, string | undefined>).range
-  let rangeStart = 0
-  let rangeEndRequested: number | null = null  // null = open-ended
-  if (rangeHeader) {
-    const m = rangeHeader.match(/bytes=(\d+)-(\d*)/)
-    if (m) {
-      rangeStart = parseInt(m[1], 10) || 0
-      rangeEndRequested = m[2] ? parseInt(m[2], 10) : null
-    }
+  if (!item || item.status !== 'indexed' || !item.nzbdavPath) {
+    return reply.code(404).send({ error: 'Stream not found' })
   }
-  app.log.info(`usenet: stream ${itemId} range=${rangeHeader ?? 'none'} start=${rangeStart} totalBytes=${item.totalBytes}`)
-
-  const rangeEnd = rangeEndRequested ?? (item.totalBytes - 1)
-  // For open-ended ranges, totalBytes is an estimate so we omit Content-Length
-  // and use Connection: close to signal EOF. For bounded ranges, we know exactly.
-  const isBounded = rangeEndRequested !== null
-  const maxBytes = isBounded ? (rangeEnd - rangeStart + 1) : Infinity
-
-  const headers: Record<string, string> = {
-    'Content-Type': contentType,
-    'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-cache',
-  }
-  if (isBounded) {
-    headers['Content-Length'] = String(rangeEnd - rangeStart + 1)
-  } else {
-    headers['Connection'] = 'close'
-  }
-  if (rangeHeader) {
-    headers['Content-Range'] = `bytes ${rangeStart}-${rangeEnd}/${item.totalBytes}`
-  }
-
-  if (!isBounded) {
-    // Prevent Node.js from adding Transfer-Encoding: chunked when Content-Length is absent
-    ;(reply.raw as unknown as { useChunkedEncodingByDefault: boolean }).useChunkedEncodingByDefault = false
-  }
-  reply.raw.writeHead(rangeHeader ? 206 : 200, headers)
-
-  const sock = reply.raw as RawSocket
-  const pool = getNntpPool()
-
-  try {
-    const parsed = JSON.parse(item.segmentsJson) as unknown
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { type?: string }).type === 'rar') {
-      const { volumes } = parsed as { type: 'rar'; volumes: RarVolume[] }
-      await streamRarVolumes(pool, sock, volumes, rangeStart, app.log, itemId, maxBytes)
-    } else {
-      const segments = parsed as Array<{ messageId: string; bytes: number; number: number }>
-      const offsets = buildOffsetTable(segments)
-      const startSegment = segmentIndexForOffset(offsets, rangeStart)
-      const startByteWithinSegment = rangeStart - offsets[startSegment]
-      await streamDirectSegments(pool, sock, segments, startSegment, startByteWithinSegment, itemId, app.log, maxBytes)
-    }
-  } catch (err) {
-    app.log.warn(`usenet: stream error for item ${itemId}: ${err}`)
-  } finally {
-    reply.raw.end()
-  }
+  return reply.redirect(buildNzbDavStreamUrl(item.nzbdavPath), 302)
 })
 // Failed items are retried after 7 days in case a new release has appeared on the indexer.
 // Indexed items are never considered stale — NZB message IDs are stable for years.
@@ -1808,6 +1610,7 @@ async function resolveUsenetStream(playPath: string, origin: string): Promise<st
     if (item?.status === 'indexed') {
       return `${origin}/usenet/stream/${item.id}`
     }
+    if (item?.status === 'pending') return null
     if (item?.status === 'failed' && !usenetFailedExpired(item)) return null
     app.log.info(`playback: usenet indexing movie ${movieMatch[1]} during PlaybackInfo`)
     await Promise.race([
@@ -1828,6 +1631,7 @@ async function resolveUsenetStream(playPath: string, origin: string): Promise<st
     if (item?.status === 'indexed') {
       return `${origin}/usenet/stream/${item.id}`
     }
+    if (item?.status === 'pending') return null
     if (item?.status === 'failed' && !usenetFailedExpired(item)) return null
     app.log.info(`playback: usenet indexing ${epMatch[1]} S${s}E${e} during PlaybackInfo`)
     await Promise.race([
@@ -1846,9 +1650,14 @@ async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promis
   if (!movie) throw new PlaybackResolutionError('Movie not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetMovieItem(movie.tmdbId)
   if (existing?.status === 'indexed') {
-    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
+    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId, config.serverUrl)
     app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
     return { url, filename, provider: 'Usenet' }
+  }
+  if (existing?.status === 'pending') {
+    app.log.info(`play: usenet pending for ${imdbId}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+    if (isDebridConfigured()) return resolveStremioPlayback('movie', imdbId, playbackClient)
+    throw new PlaybackResolutionError('NzbDav processing', 503, { error: 'NzbDav processing', message: 'NzbDav is processing this item' })
   }
   if (existing?.status === 'failed' && !usenetFailedExpired(existing)) {
     app.log.info(`play: usenet no NZB for ${imdbId}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
@@ -1859,7 +1668,7 @@ async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promis
   await indexMovieNzb(movie.tmdbId).catch(err => app.log.warn(`play: usenet index failed for ${imdbId}: ${err}`))
   const item = getUsenetMovieItem(movie.tmdbId)
   if (item?.status === 'indexed') {
-    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId)
+    const { url, filename } = resolveUsenetMovieStream(movie.tmdbId, config.serverUrl)
     app.log.info(`play: usenet resolved ${filename} for ${imdbId}`)
     return { url, filename, provider: 'Usenet' }
   }
@@ -1880,9 +1689,14 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   if (!show) throw new PlaybackResolutionError('Show not found', 404, { error: 'Not Found', message: 'Not Found' })
   const existing = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
   if (existing?.status === 'indexed') {
-    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
+    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber, config.serverUrl)
     app.log.info(`play: usenet resolved ${filename} for ${label}`)
     return { url, filename, provider: 'Usenet' }
+  }
+  if (existing?.status === 'pending') {
+    app.log.info(`play: usenet pending for ${label}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
+    if (isDebridConfigured()) return resolveStremioPlayback('series', `${imdbId}:${season}:${episodeNumber}`, playbackClient)
+    throw new PlaybackResolutionError('NzbDav processing', 503, { error: 'NzbDav processing', message: 'NzbDav is processing this item' })
   }
   if (existing?.status === 'failed' && !usenetFailedExpired(existing)) {
     app.log.info(`play: usenet no NZB for ${label}, ${isDebridConfigured() ? 'falling back to debrid' : 'no debrid configured'}`)
@@ -1893,7 +1707,7 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   await indexEpisodeNzb(show.tmdbId, season, episodeNumber).catch(err => app.log.warn(`play: usenet index failed for ${label}: ${err}`))
   const item = getUsenetEpisodeItem(show.tmdbId, season, episodeNumber)
   if (item?.status === 'indexed') {
-    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber)
+    const { url, filename } = resolveUsenetEpisodeStream(show.tmdbId, season, episodeNumber, config.serverUrl)
     app.log.info(`play: usenet resolved ${filename} for ${label}`)
     return { url, filename, provider: 'Usenet' }
   }

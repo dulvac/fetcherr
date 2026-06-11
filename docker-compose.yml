@@ -18,12 +18,11 @@ services:
       TRAKT_USERNAME: "${TRAKT_USERNAME:-}"
       PROWLARR_URL: "${PROWLARR_URL:-}"
       PROWLARR_API_KEY: "${PROWLARR_API_KEY:-}"
-      NNTP_HOST: "${NNTP_HOST:-}"
-      NNTP_PORT: "${NNTP_PORT:-563}"
-      NNTP_USER: "${NNTP_USER:-}"
-      NNTP_PASS: "${NNTP_PASS:-}"
-      NNTP_SSL: "${NNTP_SSL:-true}"
-      NNTP_CONNECTIONS: "${NNTP_CONNECTIONS:-10}"
+      NZBDAV_URL: "${NZBDAV_URL:-}"
+      NZBDAV_API_KEY: "${NZBDAV_API_KEY:-}"
+      NZBDAV_USER: "${NZBDAV_USER:-admin}"
+      NZBDAV_PASS: "${NZBDAV_PASS:-}"
+      NZBDAV_PUBLIC_URL: "${NZBDAV_PUBLIC_URL:-}"
       MEDIA_SOURCE_SELECTION: "true"
     volumes:
       - ./data-usenet:/app/data

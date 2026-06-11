@@ -1,54 +1,26 @@
 import { config } from '../config.js'
-import { getMovieByTmdbId, getShowByTmdbId, listUnindexedMovieTmdbIds, listUnindexedEpisodes, listUsenetPriorityTargets, upsertUsenetItem, markUsenetItemFailed } from '../db.js'
+import { getMovieByTmdbId, getShowByTmdbId, listUnindexedMovieTmdbIds, listUnindexedEpisodes, listUsenetPriorityTargets, listPendingUsenetItems, upsertUsenetItem, updateUsenetItemIndexed, markUsenetItemFailed } from '../db.js'
 import { searchMovieNzb, searchEpisodeNzb, isProwlarrConfigured, type NzbResult } from './prowlarr.js'
-import { parseNzb, parseRarDataOffset, buildOffsetTable, estimateDecodedBytesExport, type NzbFile } from './nzb-parser.js'
-import { getNntpPool } from './nntp-pool.js'
-import { ydecode } from './ydecode.js'
+import { submitNzbUrl, getHistorySlot, findVideoInFolder, isNzbDavConfigured } from './nzbdav.js'
 
-const SYNC_INTERVAL_MS   = 6 * 60 * 60 * 1000
-const STARTUP_DELAY_MS   = 10_000
-const BATCH_SIZE         = 1
-const BATCH_DELAY_MS     = 3_000
-const DEFAULT_VOL0_HEADER = 128
-const DEFAULT_CONT_HEADER = 50
+const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000
+const STARTUP_DELAY_MS = 10_000
+const BATCH_SIZE       = 1
+const BATCH_DELAY_MS   = 3_000
+const POLL_INTERVAL_MS = 3_000
+const POLL_MAX_MS      = 30_000
 
-function isNntpConfigured(): boolean {
-  return Boolean(config.nntpHost && config.nntpUser && config.nntpPass)
+function ensureNzbApiKey(downloadUrl: string): string {
+  if (downloadUrl.includes('apikey')) return downloadUrl
+  return downloadUrl + (downloadUrl.includes('?') ? '&' : '?') + `apikey=${config.prowlarrApiKey}`
 }
 
-async function fetchAndParseNzb(downloadUrl: string): Promise<ReturnType<typeof parseNzb>> {
-  const url = downloadUrl.includes('apikey')
-    ? downloadUrl
-    : downloadUrl + (downloadUrl.includes('?') ? '&' : '?') + `apikey=${config.prowlarrApiKey}`
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) })
-  if (!res.ok) throw new Error(`NZB fetch returned ${res.status}`)
-  return parseNzb(await res.text())
-}
-
-async function fetchVolumeHeaderBytes(volume: NzbFile, fallback: number): Promise<number> {
-  try {
-    const pool = getNntpPool()
-    const body = await pool.fetchArticleBody(volume.segments[0].messageId)
-    const decoded = ydecode(body)
-    const offset = parseRarDataOffset(decoded)
-    return offset > 0 ? offset : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function buildRarSegmentsJson(volumes: NzbFile[], headerBytesPerVolume: number[]): { segmentsJson: string; totalBytes: number } {
-  let totalBytes = 0
-  const volumeData = volumes.map((vol, i) => {
-    const headerBytes = headerBytesPerVolume[i] ?? headerBytesPerVolume[1] ?? DEFAULT_CONT_HEADER
-    const volDecoded = vol.segments.reduce((sum, s) => sum + estimateDecodedBytesExport(s.bytes), 0)
-    totalBytes += Math.max(0, volDecoded - headerBytes)
-    return { headerBytes, segments: vol.segments }
-  })
-  return { segmentsJson: JSON.stringify({ type: 'rar', volumes: volumeData }), totalBytes }
+async function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 export async function indexMovie(tmdbId: number): Promise<void> {
+  if (!isNzbDavConfigured()) return
   const movie = getMovieByTmdbId(tmdbId)
   if (!movie?.imdbId) {
     markUsenetItemFailed('movie', tmdbId, null, null, 'no IMDB ID')
@@ -64,6 +36,7 @@ export async function indexMovie(tmdbId: number): Promise<void> {
 }
 
 export async function indexEpisode(showTmdbId: number, season: number, episode: number): Promise<void> {
+  if (!isNzbDavConfigured()) return
   const show = getShowByTmdbId(showTmdbId)
   if (!show?.tvdbId) {
     markUsenetItemFailed('episode', showTmdbId, season, episode, 'no TVDB ID')
@@ -84,67 +57,102 @@ async function indexItem(
   episode: number | null,
   result: NzbResult,
 ): Promise<void> {
-  const parsed = await fetchAndParseNzb(result.downloadUrl)
-  if (!parsed) {
-    markUsenetItemFailed(mediaType, tmdbId, season, episode, `NZB has no usable files: ${result.title}`)
-    return
-  }
+  const label = mediaType === 'episode' ? `${tmdbId} S${season}E${episode}` : String(tmdbId)
+  const category = mediaType === 'movie' ? 'movies' : 'tv'
+  const nzbUrl = ensureNzbApiKey(result.downloadUrl)
 
-  let videoFilename: string
-  let totalBytes: number
-  let segmentsJson: string
+  const nzoId = await submitNzbUrl(nzbUrl, category)
+  console.log(`[usenet/sync] submitted ${mediaType} ${label}: ${result.title} → ${nzoId}`)
 
-  if (parsed.type === 'direct') {
-    videoFilename = parsed.file.filename
-    totalBytes    = parsed.estimatedDecodedBytes
-    segmentsJson  = JSON.stringify(parsed.file.segments)
-  } else {
-    // RAR: fetch first article of vol0 and vol1 to get exact header offsets
-    const [vol0Header, vol1Header] = await Promise.all([
-      fetchVolumeHeaderBytes(parsed.volumes[0], DEFAULT_VOL0_HEADER),
-      parsed.volumes.length > 1
-        ? fetchVolumeHeaderBytes(parsed.volumes[1], DEFAULT_CONT_HEADER)
-        : Promise.resolve(DEFAULT_CONT_HEADER),
-    ])
-    const headerBytes = [vol0Header, ...parsed.volumes.slice(1).map(() => vol1Header)]
-    const built = buildRarSegmentsJson(parsed.volumes, headerBytes)
-    segmentsJson  = built.segmentsJson
-    totalBytes    = built.totalBytes
-    // Derive filename from release title — strip scene tags, assume mkv
-    videoFilename = result.title.replace(/\.(rar|r\d{2,3})$/i, '') + '.mkv'
-  }
-
+  // Store as pending immediately to prevent re-submission during polling
   upsertUsenetItem({
     mediaType,
     tmdbId,
     season,
     episode,
-    nzbTitle:       result.title,
-    nzbDownloadUrl: result.downloadUrl,
-    videoFilename,
-    totalBytes,
-    segmentsJson,
-    status:         'indexed',
-    indexedAt:      Date.now(),
+    nzbTitle:        result.title,
+    nzbDownloadUrl:  result.downloadUrl,
+    videoFilename:   '',
+    totalBytes:      0,
+    segmentsJson:    '[]',
+    nzbdavNzoId:     nzoId,
+    nzbdavPath:      '',
+    status:          'pending',
+    indexedAt:       Date.now(),
   })
-  const label = mediaType === 'episode' ? `${tmdbId} S${season}E${episode}` : String(tmdbId)
-  console.log(`[usenet/sync] indexed ${mediaType} ${label}: ${videoFilename} (${parsed.type})`)
+
+  // Poll NzbDav history until Completed or timeout
+  const deadline = Date.now() + POLL_MAX_MS
+  while (Date.now() < deadline) {
+    await delay(POLL_INTERVAL_MS)
+    try {
+      const slot = await getHistorySlot(nzoId)
+      if (!slot) continue
+      if (slot.status === 'Failed') {
+        console.warn(`[usenet/sync] NzbDav failed ${label}: ${slot.fail_message ?? 'unknown'}`)
+        markUsenetItemFailed(mediaType, tmdbId, season, episode, slot.fail_message || 'NzbDav processing failed')
+        return
+      }
+      if (slot.status === 'Completed') {
+        const folderPath = `/content/${encodeURIComponent(slot.category)}/${encodeURIComponent(slot.name)}`
+        const videoPath = await findVideoInFolder(folderPath)
+        if (videoPath) {
+          const filename = videoPath.split('/').pop() ?? result.title + '.mkv'
+          const item = listPendingUsenetItems().find(i => i.nzbdavNzoId === nzoId)
+          if (item) updateUsenetItemIndexed(item.id, videoPath, filename)
+          console.log(`[usenet/sync] indexed ${mediaType} ${label}: ${filename}`)
+          return
+        }
+      }
+    } catch (e: unknown) {
+      console.warn(`[usenet/sync] poll error for ${label}: ${(e as Error)?.message ?? e}`)
+    }
+  }
+
+  console.warn(`[usenet/sync] timeout waiting for NzbDav completion for ${label}, leaving as pending`)
 }
 
-async function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+// Poll all pending items in DB against NzbDav history.
+// Runs periodically so items that timed out in indexItem() still get resolved.
+async function pollPendingItems(): Promise<void> {
+  if (!isNzbDavConfigured()) return
+  const pending = listPendingUsenetItems()
+  if (!pending.length) return
+  console.log(`[usenet/sync] polling ${pending.length} pending NzbDav items`)
+
+  for (const item of pending) {
+    if (!item.nzbdavNzoId) continue
+    try {
+      const slot = await getHistorySlot(item.nzbdavNzoId)
+      if (!slot) continue
+      if (slot.status === 'Failed') {
+        markUsenetItemFailed(item.mediaType, item.tmdbId, item.season, item.episode, slot.fail_message || 'NzbDav failed')
+        console.warn(`[usenet/sync] pending → failed: ${item.nzbTitle}`)
+      } else if (slot.status === 'Completed') {
+        const folderPath = `/content/${encodeURIComponent(slot.category)}/${encodeURIComponent(slot.name)}`
+        const videoPath = await findVideoInFolder(folderPath)
+        if (videoPath) {
+          const filename = videoPath.split('/').pop() ?? item.nzbTitle + '.mkv'
+          updateUsenetItemIndexed(item.id, videoPath, filename)
+          console.log(`[usenet/sync] pending → indexed: ${item.nzbTitle}`)
+        }
+      }
+    } catch (e: unknown) {
+      console.warn(`[usenet/sync] poll pending error for item ${item.id}: ${(e as Error)?.message ?? e}`)
+    }
+  }
 }
 
 export async function syncUsenetLibrary(): Promise<void> {
-  if (!isProwlarrConfigured()) return
+  if (!isProwlarrConfigured() || !isNzbDavConfigured()) return
 
   const movieIds = listUnindexedMovieTmdbIds()
   console.log(`[usenet/sync] indexing ${movieIds.length} unindexed movies`)
   for (let i = 0; i < movieIds.length; i += BATCH_SIZE) {
     const batch = movieIds.slice(i, i + BATCH_SIZE)
     await Promise.allSettled(batch.map(id => indexMovie(id).catch(e => {
-      console.warn(`[usenet/sync] movie ${id} error: ${e?.message ?? e}`)
-      markUsenetItemFailed('movie', id, null, null, String(e?.message ?? e))
+      console.warn(`[usenet/sync] movie ${id} error: ${(e as Error)?.message ?? e}`)
+      markUsenetItemFailed('movie', id, null, null, String((e as Error)?.message ?? e))
     })))
     if (i + BATCH_SIZE < movieIds.length) await delay(BATCH_DELAY_MS)
   }
@@ -154,47 +162,52 @@ export async function syncUsenetLibrary(): Promise<void> {
   for (let i = 0; i < episodes.length; i += BATCH_SIZE) {
     const batch = episodes.slice(i, i + BATCH_SIZE)
     await Promise.allSettled(batch.map(ep => indexEpisode(ep.showTmdbId, ep.season, ep.episode).catch(e => {
-      console.warn(`[usenet/sync] episode ${ep.showTmdbId} S${ep.season}E${ep.episode} error: ${e?.message ?? e}`)
-      markUsenetItemFailed('episode', ep.showTmdbId, ep.season, ep.episode, String(e?.message ?? e))
+      console.warn(`[usenet/sync] episode ${ep.showTmdbId} S${ep.season}E${ep.episode} error: ${(e as Error)?.message ?? e}`)
+      markUsenetItemFailed('episode', ep.showTmdbId, ep.season, ep.episode, String((e as Error)?.message ?? e))
     })))
     if (i + BATCH_SIZE < episodes.length) await delay(BATCH_DELAY_MS)
   }
 }
 
 export async function syncPriorityUsenetItems(): Promise<void> {
-  if (!isProwlarrConfigured()) return
+  if (!isProwlarrConfigured() || !isNzbDavConfigured()) return
 
   const { movies, episodes } = listUsenetPriorityTargets()
   if (!movies.length && !episodes.length) return
   console.log(`[usenet/sync] priority: ${movies.length} resume movies, ${episodes.length} next-up/resume episodes`)
 
   await Promise.allSettled(movies.map(id => indexMovie(id).catch(e => {
-    console.warn(`[usenet/sync] priority movie ${id} error: ${e?.message ?? e}`)
-    markUsenetItemFailed('movie', id, null, null, String(e?.message ?? e))
+    console.warn(`[usenet/sync] priority movie ${id} error: ${(e as Error)?.message ?? e}`)
+    markUsenetItemFailed('movie', id, null, null, String((e as Error)?.message ?? e))
   })))
 
   await Promise.allSettled(episodes.map(ep => indexEpisode(ep.showTmdbId, ep.season, ep.episode).catch(e => {
-    console.warn(`[usenet/sync] priority episode ${ep.showTmdbId} S${ep.season}E${ep.episode} error: ${e?.message ?? e}`)
-    markUsenetItemFailed('episode', ep.showTmdbId, ep.season, ep.episode, String(e?.message ?? e))
+    console.warn(`[usenet/sync] priority episode error: ${(e as Error)?.message ?? e}`)
+    markUsenetItemFailed('episode', ep.showTmdbId, ep.season, ep.episode, String((e as Error)?.message ?? e))
   })))
 }
 
 export function startUsenetSync(): void {
-  if (!isNntpConfigured() || !isProwlarrConfigured()) {
-    console.log('[usenet/sync] NNTP or Prowlarr not configured, skipping sync')
+  if (!isNzbDavConfigured() || !isProwlarrConfigured()) {
+    console.log('[usenet/sync] NzbDav or Prowlarr not configured, skipping sync')
     return
   }
 
   const runFull = () => {
-    syncUsenetLibrary().catch(e => console.error('[usenet/sync] sync error:', e?.message ?? e))
+    syncUsenetLibrary().catch(e => console.error('[usenet/sync] sync error:', (e as Error)?.message ?? e))
+  }
+
+  const runPendingPoll = () => {
+    pollPendingItems().catch(e => console.error('[usenet/sync] pending poll error:', (e as Error)?.message ?? e))
   }
 
   setTimeout(() => {
     syncPriorityUsenetItems()
-      .catch(e => console.error('[usenet/sync] priority sync error:', e?.message ?? e))
+      .catch(e => console.error('[usenet/sync] priority sync error:', (e as Error)?.message ?? e))
       .finally(() => {
         runFull()
         setInterval(runFull, SYNC_INTERVAL_MS)
+        setInterval(runPendingPoll, 60_000)
       })
   }, STARTUP_DELAY_MS)
 }

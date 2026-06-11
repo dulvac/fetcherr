@@ -335,8 +335,10 @@ CREATE TABLE IF NOT EXISTS usenet_items (
   video_filename  TEXT    NOT NULL DEFAULT '',
   total_bytes     INTEGER NOT NULL DEFAULT 0,
   segments_json   TEXT    NOT NULL DEFAULT '[]',
-  status          TEXT    NOT NULL DEFAULT 'indexed' CHECK (status IN ('indexed', 'failed')),
-  indexed_at      INTEGER NOT NULL,
+  nzbdav_nzo_id   TEXT    NOT NULL DEFAULT '',
+  nzbdav_path     TEXT    NOT NULL DEFAULT '',
+  status          TEXT    NOT NULL DEFAULT 'indexed' CHECK (status IN ('indexed', 'failed', 'pending')),
+  indexed_at      INTEGER NOT NULL DEFAULT 0,
   fail_count      INTEGER NOT NULL DEFAULT 0,
   fail_reason     TEXT    NOT NULL DEFAULT '',
   UNIQUE(media_type, tmdb_id, season, episode)
@@ -512,6 +514,46 @@ export function getDb(): Database.Database {
       updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     )`) } catch { /* already exists */ }
     try { _db.exec(`CREATE INDEX IF NOT EXISTS torbox_cleanup_jobs_delete_at ON torbox_cleanup_jobs(delete_at)`) } catch { /* already exists */ }
+    // Migrate usenet_items: add NzbDav columns and expand status CHECK to include 'pending'
+    {
+      const tableExists = (_db.prepare(`SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='usenet_items'`).get() as { cnt: number }).cnt > 0
+      if (tableExists) {
+        const hasNzbdavCol = (_db.prepare(`SELECT COUNT(*) as cnt FROM pragma_table_info('usenet_items') WHERE name='nzbdav_nzo_id'`).get() as { cnt: number }).cnt > 0
+        if (!hasNzbdavCol) {
+          _db.exec(`
+            BEGIN;
+            CREATE TABLE usenet_items_v2 (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              media_type      TEXT    NOT NULL CHECK (media_type IN ('movie', 'episode')),
+              tmdb_id         INTEGER NOT NULL,
+              season          INTEGER,
+              episode         INTEGER,
+              nzb_title       TEXT    NOT NULL DEFAULT '',
+              nzb_download_url TEXT   NOT NULL DEFAULT '',
+              video_filename  TEXT    NOT NULL DEFAULT '',
+              total_bytes     INTEGER NOT NULL DEFAULT 0,
+              segments_json   TEXT    NOT NULL DEFAULT '[]',
+              nzbdav_nzo_id   TEXT    NOT NULL DEFAULT '',
+              nzbdav_path     TEXT    NOT NULL DEFAULT '',
+              status          TEXT    NOT NULL DEFAULT 'indexed' CHECK (status IN ('indexed', 'failed', 'pending')),
+              indexed_at      INTEGER NOT NULL DEFAULT 0,
+              fail_count      INTEGER NOT NULL DEFAULT 0,
+              fail_reason     TEXT    NOT NULL DEFAULT '',
+              UNIQUE(media_type, tmdb_id, season, episode)
+            );
+            INSERT OR IGNORE INTO usenet_items_v2
+              SELECT id, media_type, tmdb_id, season, episode, nzb_title, nzb_download_url,
+                     video_filename, total_bytes, segments_json, '', '', status, indexed_at, fail_count, fail_reason
+              FROM usenet_items;
+            DROP TABLE usenet_items;
+            ALTER TABLE usenet_items_v2 RENAME TO usenet_items;
+            CREATE INDEX IF NOT EXISTS usenet_items_movie ON usenet_items(media_type, tmdb_id) WHERE media_type = 'movie';
+            CREATE INDEX IF NOT EXISTS usenet_items_episode ON usenet_items(media_type, tmdb_id, season, episode) WHERE media_type = 'episode';
+            COMMIT;
+          `)
+        }
+      }
+    }
     migrateAppUserRoles(_db)
     migrateAppUserSearchEnabled(_db)
     migrateLegacyUserData(_db)
@@ -2427,7 +2469,9 @@ export interface UsenetItem {
   videoFilename: string
   totalBytes: number
   segmentsJson: string
-  status: 'indexed' | 'failed'
+  nzbdavNzoId: string
+  nzbdavPath: string
+  status: 'indexed' | 'failed' | 'pending'
   indexedAt: number
   failCount: number
   failReason: string
@@ -2445,7 +2489,9 @@ function row2usenetItem(r: Record<string, unknown>): UsenetItem {
     videoFilename:  r.video_filename as string,
     totalBytes:     r.total_bytes as number,
     segmentsJson:   r.segments_json as string,
-    status:         r.status as 'indexed' | 'failed',
+    nzbdavNzoId:    r.nzbdav_nzo_id as string,
+    nzbdavPath:     r.nzbdav_path as string,
+    status:         r.status as 'indexed' | 'failed' | 'pending',
     indexedAt:      r.indexed_at as number,
     failCount:      r.fail_count as number,
     failReason:     r.fail_reason as string,
@@ -2455,20 +2501,33 @@ function row2usenetItem(r: Record<string, unknown>): UsenetItem {
 export function upsertUsenetItem(item: Omit<UsenetItem, 'id' | 'failCount' | 'failReason'>): number {
   const result = getDb().prepare(`
     INSERT INTO usenet_items
-      (media_type, tmdb_id, season, episode, nzb_title, nzb_download_url, video_filename, total_bytes, segments_json, status, indexed_at)
-    VALUES (@mediaType, @tmdbId, @season, @episode, @nzbTitle, @nzbDownloadUrl, @videoFilename, @totalBytes, @segmentsJson, @status, @indexedAt)
+      (media_type, tmdb_id, season, episode, nzb_title, nzb_download_url, video_filename, total_bytes, segments_json, nzbdav_nzo_id, nzbdav_path, status, indexed_at)
+    VALUES (@mediaType, @tmdbId, @season, @episode, @nzbTitle, @nzbDownloadUrl, @videoFilename, @totalBytes, @segmentsJson, @nzbdavNzoId, @nzbdavPath, @status, @indexedAt)
     ON CONFLICT(media_type, tmdb_id, season, episode) DO UPDATE SET
       nzb_title        = excluded.nzb_title,
       nzb_download_url = excluded.nzb_download_url,
       video_filename   = excluded.video_filename,
       total_bytes      = excluded.total_bytes,
       segments_json    = excluded.segments_json,
+      nzbdav_nzo_id    = excluded.nzbdav_nzo_id,
+      nzbdav_path      = excluded.nzbdav_path,
       status           = excluded.status,
       indexed_at       = excluded.indexed_at,
       fail_count       = 0,
       fail_reason      = ''
   `).run(item)
   return (result as { lastInsertRowid: number }).lastInsertRowid
+}
+
+export function updateUsenetItemIndexed(id: number, nzbdavPath: string, videoFilename: string): void {
+  getDb().prepare(`
+    UPDATE usenet_items SET status = 'indexed', nzbdav_path = ?, video_filename = ?, fail_count = 0, fail_reason = ''
+    WHERE id = ?
+  `).run(nzbdavPath, videoFilename, id)
+}
+
+export function listPendingUsenetItems(): UsenetItem[] {
+  return (getDb().prepare(`SELECT * FROM usenet_items WHERE status = 'pending'`).all() as Array<Record<string, unknown>>).map(row2usenetItem)
 }
 
 export function markUsenetItemFailed(mediaType: 'movie' | 'episode', tmdbId: number, season: number | null, episode: number | null, reason: string): void {
@@ -2516,7 +2575,7 @@ export function listUnindexedMovieTmdbIds(): number[] {
     INNER JOIN source_items si ON si.media_type = 'movie' AND si.tmdb_id = m.tmdb_id
     WHERE NOT EXISTS (
       SELECT 1 FROM usenet_items ui
-      WHERE ui.media_type = 'movie' AND ui.tmdb_id = m.tmdb_id AND ui.status = 'indexed'
+      WHERE ui.media_type = 'movie' AND ui.tmdb_id = m.tmdb_id AND ui.status IN ('indexed', 'pending')
     )
   `).all() as Array<{ tmdb_id: number }>).map(r => r.tmdb_id)
 }
@@ -2549,7 +2608,7 @@ export function listUnindexedEpisodes(): Array<{ showTmdbId: number; season: num
           AND ui.tmdb_id = e.show_tmdb_id
           AND ui.season = e.season_number
           AND ui.episode = e.episode_number
-          AND ui.status = 'indexed'
+          AND ui.status IN ('indexed', 'pending')
       )
   `).all() as Array<{ show_tmdb_id: number; season_number: number; episode_number: number }>)
     .map(r => ({ showTmdbId: r.show_tmdb_id, season: r.season_number, episode: r.episode_number }))

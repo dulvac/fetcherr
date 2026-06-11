@@ -192,4 +192,9 @@ export const config = {
   nntpPass:          process.env.NNTP_PASS ?? '',
   nntpConnections:   parsePositiveIntegerSetting(process.env.NNTP_CONNECTIONS, 4),
   nntpSsl:           parseBooleanSetting(process.env.NNTP_SSL, true),
+  nzbdavUrl:         (process.env.NZBDAV_URL ?? '').replace(/\/$/, ''),
+  nzbdavApiKey:      process.env.NZBDAV_API_KEY ?? '',
+  nzbdavUser:        process.env.NZBDAV_USER ?? 'admin',
+  nzbdavPass:        process.env.NZBDAV_PASS ?? '',
+  nzbdavPublicUrl:   (process.env.NZBDAV_PUBLIC_URL ?? '').replace(/\/$/, ''),
 }
