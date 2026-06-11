@@ -146,6 +146,7 @@ function hasPreferredSignal(s: Stream, preferredLanguage: string): boolean {
 }
 
 function languagePenalty(s: Stream, preferredLanguage: string): number {
+  if (hasPreferredSignal(s, preferredLanguage)) return 0
   const text = streamMetadataText(s)
   return nonPreferredAudioPenalty(text, preferredLanguage)
 }
