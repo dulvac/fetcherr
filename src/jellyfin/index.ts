@@ -1808,7 +1808,7 @@ function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) 
     CommunityRating:       ep.communityRating || undefined,
     ExternalUrls:          null,
     PremiereDate:          jellyfinPremiereDate(ep.airDate),
-    DateCreated:           ep.syncedAt,
+    DateCreated:           ep.airDate ? `${ep.airDate}T00:00:00Z` : ep.syncedAt,
     IsFolder:              false,
     IndexNumber:           ep.episodeNumber,
     ParentIndexNumber:     ep.seasonNumber,
