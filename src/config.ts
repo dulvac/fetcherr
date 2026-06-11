@@ -197,4 +197,5 @@ export const config = {
   nzbdavUser:        process.env.NZBDAV_USER ?? 'admin',
   nzbdavPass:        process.env.NZBDAV_PASS ?? '',
   nzbdavPublicUrl:   (process.env.NZBDAV_PUBLIC_URL ?? '').replace(/\/$/, ''),
+  nzbdavSyncEnabled: parseBooleanSetting(process.env.NZBDAV_SYNC_ENABLED, false),
 }

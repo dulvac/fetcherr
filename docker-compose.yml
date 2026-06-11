@@ -4,18 +4,31 @@ services:
     container_name: fetcherr-usenet
     restart: unless-stopped
     ports:
-      - "9991:9990"
+      - "127.0.0.1:9991:9990"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       PORT: "9990"
       DATABASE_PATH: /app/data/fetcherr.db
-      SERVER_NAME: "Fetcherr Usenet"
-      SERVER_ID: "fetcherr-usenet-001"
+      SERVER_NAME: "${SERVER_NAME:-Fetcherr}"
+      SERVER_ID: "${SERVER_ID:-fetcherr-usenet-001}"
       SERVER_URL: "${USENET_SERVER_URL:-http://localhost:9991}"
-      TMDB_API_KEY: "${TMDB_API_KEY:-}"
+      TMDB_API_KEY: "${TMDB_API_KEY}"
       TVDB_API_KEY: "${TVDB_API_KEY:-}"
+      STREAM_PROVIDER_URLS: "${STREAM_PROVIDER_URLS:-}"
+      ENGLISH_STREAM_MODE: "${ENGLISH_STREAM_MODE:-prefer}"
+      UI_USERNAME: "${UI_USERNAME:-admin}"
+      UI_PASSWORD: "${UI_PASSWORD:-}"
       TRAKT_CLIENT_ID: "${TRAKT_CLIENT_ID:-}"
       TRAKT_CLIENT_SECRET: "${TRAKT_CLIENT_SECRET:-}"
       TRAKT_USERNAME: "${TRAKT_USERNAME:-}"
+      TRAKT_LISTS: "${TRAKT_LISTS:-}"
+      TORBOX_API_KEY: "${TORBOX_API_KEY:-}"
       PROWLARR_URL: "${PROWLARR_URL:-}"
       PROWLARR_API_KEY: "${PROWLARR_API_KEY:-}"
       NZBDAV_URL: "${NZBDAV_URL:-}"
@@ -23,6 +36,14 @@ services:
       NZBDAV_USER: "${NZBDAV_USER:-admin}"
       NZBDAV_PASS: "${NZBDAV_PASS:-}"
       NZBDAV_PUBLIC_URL: "${NZBDAV_PUBLIC_URL:-}"
+      NZBDAV_SYNC_ENABLED: "${NZBDAV_SYNC_ENABLED:-false}"
       MEDIA_SOURCE_SELECTION: "true"
     volumes:
       - ./data-usenet:/app/data
+    networks:
+      - media-stack
+
+networks:
+  media-stack:
+    external: true
+    name: jellyfin_media-stack

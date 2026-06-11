@@ -192,6 +192,14 @@ export function startUsenetSync(): void {
     console.log('[usenet/sync] NzbDav or Prowlarr not configured, skipping sync')
     return
   }
+  if (!config.nzbdavSyncEnabled) {
+    console.log('[usenet/sync] NZBDAV_SYNC_ENABLED=false — library sync disabled; on-demand indexing still active')
+    // Still poll pending items in case on-demand indexing submitted something
+    setInterval(() => {
+      pollPendingItems().catch(e => console.error('[usenet/sync] pending poll error:', (e as Error)?.message ?? e))
+    }, 60_000)
+    return
+  }
 
   const runFull = () => {
     syncUsenetLibrary().catch(e => console.error('[usenet/sync] sync error:', (e as Error)?.message ?? e))
