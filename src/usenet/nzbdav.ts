@@ -59,7 +59,8 @@ export async function findVideoInFolder(folderWebdavPath: string): Promise<strin
   const videoExt = /\.(mkv|mp4|avi|m4v|ts|m2ts)$/i
   let match: RegExpExecArray | null
   while ((match = hrefPattern.exec(xml)) !== null) {
-    const href = decodeURIComponent(match[1].trim())
+    let href = decodeURIComponent(match[1].trim())
+    try { href = new URL(href).pathname } catch { /* already a path */ }
     if (videoExt.test(href)) return href
   }
   return null
