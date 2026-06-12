@@ -1,8 +1,32 @@
 services:
+  nzbdav:
+    image: nzbdav/nzbdav:latest
+    container_name: nzbdav
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+    volumes:
+      - ./nzbdav-config:/config
+      - ./nzbdav-data:/data
+    networks:
+      - media-stack
+
   fetcherr-usenet:
     image: ghcr.io/goneturbo/fetcherr:usenet
     container_name: fetcherr-usenet
     restart: unless-stopped
+    depends_on:
+      nzbdav:
+        condition: service_healthy
     ports:
       - "127.0.0.1:9991:9990"
     security_opt:
@@ -31,10 +55,10 @@ services:
       TORBOX_API_KEY: "${TORBOX_API_KEY:-}"
       PROWLARR_URL: "${PROWLARR_URL:-}"
       PROWLARR_API_KEY: "${PROWLARR_API_KEY:-}"
-      NZBDAV_URL: "${NZBDAV_URL:-}"
-      NZBDAV_API_KEY: "${NZBDAV_API_KEY:-}"
+      NZBDAV_URL: "http://nzbdav:3000"
+      NZBDAV_API_KEY: "${NZBDAV_API_KEY}"
       NZBDAV_USER: "${NZBDAV_USER:-admin}"
-      NZBDAV_PASS: "${NZBDAV_PASS:-}"
+      NZBDAV_PASS: "${NZBDAV_PASS}"
       NZBDAV_PUBLIC_URL: "${NZBDAV_PUBLIC_URL:-}"
       NZBDAV_SYNC_ENABLED: "${NZBDAV_SYNC_ENABLED:-false}"
       MEDIA_SOURCE_SELECTION: "true"
