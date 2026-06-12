@@ -1577,7 +1577,7 @@ async function buildPlaybackMediaSources(input: {
   }
 }
 
-// ── Usenet stream endpoint — 302 redirect to NzbDav WebDAV ──────────────────
+// ── Usenet stream endpoint — proxy NzbDav WebDAV to avoid credential-URL redirects ──
 
 app.get('/usenet/stream/:itemId', async (req, reply) => {
   const { itemId } = req.params as { itemId: string }
@@ -1585,7 +1585,20 @@ app.get('/usenet/stream/:itemId', async (req, reply) => {
   if (!item || item.status !== 'indexed' || !item.nzbdavPath) {
     return reply.code(404).send({ error: 'Stream not found' })
   }
-  return reply.redirect(buildNzbDavStreamUrl(item.nzbdavPath), 302)
+  const internalUrl = config.nzbdavUrl + item.nzbdavPath
+  const auth = 'Basic ' + Buffer.from(`${config.nzbdavUser}:${config.nzbdavPass}`).toString('base64')
+  const upstreamHeaders: Record<string, string> = { Authorization: auth }
+  const rangeHeader = (req.headers as Record<string, string | undefined>)['range']
+  if (rangeHeader) upstreamHeaders['Range'] = rangeHeader
+  const upstream = await fetch(internalUrl, { headers: upstreamHeaders, signal: AbortSignal.timeout(30_000) })
+  const PASS_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges']
+  for (const h of PASS_HEADERS) {
+    const v = upstream.headers.get(h)
+    if (v) reply.header(h, v)
+  }
+  reply.code(upstream.status)
+  const { Readable } = await import('node:stream')
+  return reply.send(Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream<Uint8Array>))
 })
 // Failed items are retried after 7 days in case a new release has appeared on the indexer.
 // Indexed items are never considered stale — NZB message IDs are stable for years.
