@@ -396,7 +396,7 @@ export async function uiRoutes(app: FastifyInstance) {
     const body = req.body as { username?: string; password?: string } | undefined
     const username = body?.username ?? ''
     const password = body?.password ?? ''
-    const user = checkCredentials(username, password)
+    const user = await checkCredentials(username, password)
     if (user) {
       loginAttempts.delete(rateKey)
       const token = createSession(user.id)
