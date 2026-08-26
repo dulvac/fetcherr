@@ -61,7 +61,7 @@ export async function authenticateUser(username: string, password: string): Prom
     if (existing) return existing
     // Auto-provision with a random local password; LDAP is checked first on
     // every login, so the local hash is never a usable credential.
-    return createUser(name, randomBytes(24).toString('hex'), LDAP_DEFAULT_ROLE, '')
+    return createUser(name, randomBytes(24).toString('hex'), LDAP_DEFAULT_ROLE, '', undefined, 'ldap')
   }
   return verifyUserCredentials(name, password)
 }

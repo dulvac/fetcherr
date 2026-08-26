@@ -116,3 +116,5 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 All other configuration is managed through the Settings UI and stored in the database.
 
 When `LDAP_URL` and `LDAP_USER_DN` are both set, logins first try an LDAP bind with the user's credentials and fall back to local accounts, so the local admin keeps working. Users that authenticate via LDAP but don't exist yet are created automatically with `LDAP_DEFAULT_ROLE`.
+
+The Users section of the Settings UI shows whether LDAP is configured and which server URL is in use. Accounts created through an LDAP login carry an LDAP badge, and their password cannot be changed from Fetcherr; manage those credentials in the directory instead.
