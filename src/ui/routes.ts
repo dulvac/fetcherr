@@ -16,6 +16,7 @@ import {
   canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, unhideLibraryItem, updateUser,
   clearStremioToken, mintStremioToken, setStremioEnabled, setStremioPlayCap,
 } from '../db.js'
+import { ldapEnabled } from '../ldap-auth.js'
 import { buildPlaybackOrigin } from '../play-auth.js'
 import { playCapFor } from '../stremio-addon.js'
 import { getLogs } from '../logger.js'
@@ -839,6 +840,10 @@ export async function uiRoutes(app: FastifyInstance) {
       hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
       hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
       hasTraktClientSecret: !!getSetting('traktClientSecret'),
+      ldap: {
+        enabled: ldapEnabled(),
+        url: process.env.LDAP_URL ?? '',
+      },
       users: listUsers().map(user => ({
         id: user.id,
         username: user.username,
@@ -850,6 +855,7 @@ export async function uiRoutes(app: FastifyInstance) {
         // Derived, never the raw token as its own field: the credential appears
         // only inside the install URL, and this endpoint is admin-only.
         installUrl: stremioInstallUrl(user.stremioToken, stremioInstallOrigin(req.headers as Record<string, string | undefined>)),
+        authSource: user.authSource,
       })),
     }
   })
@@ -1168,6 +1174,9 @@ export async function uiRoutes(app: FastifyInstance) {
         return { ok: true }
       }
       if (body.id) {
+        if (body.password && getUserById(body.id)?.authSource === 'ldap') {
+          return reply.code(400).send({ error: 'This account is managed by LDAP; its password cannot be changed here.' })
+        }
         const user = updateUser(body.id, {
           username: body.username,
           password: body.password,
@@ -1175,10 +1184,10 @@ export async function uiRoutes(app: FastifyInstance) {
           maxRating: body.maxRating,
           searchEnabled: body.searchEnabled,
         })
-        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled } }
+        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
       }
       const user = createUser(body.username ?? '', body.password ?? '', role ?? 'user', body.maxRating ?? 'unrestricted', body.searchEnabled)
-      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled } }
+      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
     } catch (err) {
       return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
     }
