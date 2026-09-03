@@ -8,6 +8,8 @@ const requestedSourceIndex = Number.parseInt(process.env.JELLYFIN_MOCK_SOURCE_IN
 const rangeHeader = process.env.JELLYFIN_MOCK_RANGE || 'bytes=0-1023'
 const minMediaSources = Number.parseInt(process.env.JELLYFIN_MOCK_MIN_SOURCES || '2', 10)
 const maxMediaSources = Number.parseInt(process.env.JELLYFIN_MOCK_MAX_SOURCES || '10', 10)
+const skipNativeChecks = process.env.JELLYFIN_MOCK_SKIP_NATIVE === '1'
+const invalidCandidate = '0'.repeat(32)
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(`Usage: npm run mock:jellyfin
@@ -134,6 +136,53 @@ async function selectEpisode(token, userId) {
   return episode
 }
 
+// Native TV clients (Moonfin on webOS, jellyfin-web derivatives) ignore the
+// MediaSource Path and build their own stream URL: /Videos/{id}/stream.{Container},
+// spelling the token ApiKey and the device deviceId. Check that shape directly,
+// or browse keeps working while playback 404s.
+async function verifyNativeStreamUrl(token, item, source, label) {
+  const container = source.Container || 'mkv'
+  const nativeUrl = `${baseUrl}/Videos/${encodeURIComponent(item.Id)}/stream.${container}`
+    + `?Static=true&mediaSourceId=${encodeURIComponent(source.Id)}`
+    + `&deviceId=moonfin_webos_mock&ApiKey=${encodeURIComponent(token)}`
+
+  const res = await fetch(nativeUrl, { redirect: 'manual', headers: { range: rangeHeader } })
+  if (res.status !== 302) {
+    const text = await res.text()
+    fail(`${label} native URL /Videos/{id}/stream.${container} returned ${res.status}: ${text.slice(0, 300)}`)
+  }
+  const nativeLocation = res.headers.get('location')
+  if (!nativeLocation) fail(`${label} native URL returned 302 without Location`)
+
+  // Same shape, but with a candidate token that cannot validate. Only the ApiKey
+  // query param can authorize this one, so it proves the token is actually read
+  // instead of the request riding the candidate fallback user.
+  const tokenOnlyUrl = `${baseUrl}/Videos/${encodeURIComponent(item.Id)}/stream.${container}`
+    + `?Static=true&mediaSourceId=${encodeURIComponent(`${item.Id}:candidate:${invalidCandidate}`)}`
+    + `&deviceId=moonfin_webos_mock&ApiKey=${encodeURIComponent(token)}`
+  const tokenOnly = await fetch(tokenOnlyUrl, { redirect: 'manual', headers: { range: rangeHeader } })
+  if (tokenOnly.status !== 302) {
+    const text = await tokenOnly.text()
+    fail(`${label} ApiKey-authorized native URL returned ${tokenOnly.status}: ${text.slice(0, 300)}`)
+  }
+
+  return { container, status: res.status, redirectHost: new URL(nativeLocation).host }
+}
+
+// Endpoints Moonfin probes on every item open and at session start.
+async function verifyNativeMetadataEndpoints(token, userId, item) {
+  const ancestors = await jellyfin(
+    token,
+    `/Items/${encodeURIComponent(item.Id)}/Ancestors?UserId=${encodeURIComponent(userId)}`,
+  )
+  if (!Array.isArray(ancestors)) fail('/Items/{id}/Ancestors did not return an array')
+
+  const utc = await jellyfin(token, '/GetUtcTime')
+  if (!utc.RequestReceptionTime || !utc.ResponseTransmissionTime) {
+    fail('/GetUtcTime did not return RequestReceptionTime and ResponseTransmissionTime')
+  }
+}
+
 async function verifyPlayback(token, item, label) {
   const info = await jellyfin(token, `/Items/${encodeURIComponent(item.Id)}/PlaybackInfo`)
   assertMediaSources(item.Name, info.MediaSources)
@@ -153,6 +202,8 @@ async function verifyPlayback(token, item, label) {
   }
   const location = redirect.headers.get('location')
   if (!location) fail(`${label} source "${source.Name}" returned 302 without Location`)
+
+  const native = skipNativeChecks ? null : await verifyNativeStreamUrl(token, item, source, label)
 
   const media = await fetch(location, {
     redirect: 'follow',
@@ -179,6 +230,7 @@ async function verifyPlayback(token, item, label) {
       path: new URL(candidate.Path).pathname,
       container: candidate.Container,
     })),
+    native,
     selected: {
       index: sourceIndex,
       id: source.Id,
@@ -198,6 +250,7 @@ const userId = await getUserId(token)
 if (mediaKind === 'movie' || mediaKind === 'all') {
   const movie = await selectMovie(token, userId)
   await verifyPlayback(token, movie, 'movie')
+  if (!skipNativeChecks) await verifyNativeMetadataEndpoints(token, userId, movie)
 }
 
 if (mediaKind === 'episode' || mediaKind === 'all') {

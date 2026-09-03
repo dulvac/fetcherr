@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
@@ -2400,6 +2400,22 @@ function candidateTokenFromMediaSourceId(mediaSourceId: string | undefined): str
   return match?.[1] ?? null
 }
 
+// Clients spell the access token differently in the playback query string:
+// jellyfin-web sends api_key, Moonfin on webOS sends ApiKey, older Emby-derived
+// players send X-Emby-Token. Without this the request falls through to the
+// candidate fallback user and the play is attributed to the wrong account.
+const QUERY_TOKEN_KEYS = new Set(['apikey', 'xembytoken'])
+
+function tokenFromQuery(query: unknown): string | null {
+  if (!query || typeof query !== 'object') return null
+  for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
+    if (!QUERY_TOKEN_KEYS.has(key.toLowerCase().replace(/[-_]/g, ''))) continue
+    const token = queryValue(value as string | string[] | undefined).trim()
+    if (token) return token
+  }
+  return null
+}
+
 function signedPlaybackUrlForMediaSource(origin: string, playPath: string, mediaSourceId: string | undefined): string {
   const url = new URL(createSignedPlaybackUrl(origin, playPath))
   const candidate = candidateTokenFromMediaSourceId(mediaSourceId)
@@ -3613,6 +3629,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   app.get('/Items/:itemId/SpecialFeatures', async () => [])
   app.get('/Users/:userId/Items/:itemId/LocalTrailers', async () => [])
   app.get('/MediaSegments/:id', async () => ({ Items: [], TotalRecordCount: 0, StartIndex: 0 }))
+  // Ancestors: native clients ask on every item open to build breadcrumbs.
+  // Fetcherr items are synthetic, so there is no ancestor chain to report.
+  app.get('/Items/:id/Ancestors', async () => ([]))
+  // GetUtcTime: Emby-era clock sync, used by Moonfin at session start.
+  app.get('/GetUtcTime', async () => {
+    const now = new Date().toISOString()
+    return { RequestReceptionTime: now, ResponseTransmissionTime: now }
+  })
   app.get('/Users/:userId/Items/:itemId/SpecialFeatures', async () => [])
   app.get('/UserImage', async (_req, reply) => reply.code(204).send())
   const handleBitrateTest = async (
@@ -3932,10 +3956,26 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   app.get('/Items/:id/PlaybackInfo',  async (req, reply) => handlePlaybackInfo(req as never, reply as never))
   app.post('/Items/:id/PlaybackInfo', async (req, reply) => handlePlaybackInfo(req as never, reply as never))
 
-  // Video stream redirect (fallback for some Infuse/VidHub versions)
-  app.get('/Videos/:id/stream', async (req, reply) => {
+  // Video stream redirect. Infuse and VidHub follow the MediaSource Path, but
+  // native TV clients build their own URL from the container we advertise:
+  // /Videos/{id}/stream.{Container} (Moonfin on webOS, jellyfin-web
+  // derivatives), and some Emby-derived players ask for original.{ext} or the
+  // lowercase spelling. They all resolve to the same redirect, so register the
+  // aliases rather than let playback 404.
+  const streamRoutePaths = [
+    '/Videos/:id/stream',
+    '/Videos/:id/stream.:container',
+    '/Videos/:id/original',
+    '/Videos/:id/original.:container',
+    '/videos/:id/stream',
+    '/videos/:id/stream.:container',
+    '/videos/:id/original',
+    '/videos/:id/original.:container',
+  ]
+
+  const streamHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string }
-    const query = req.query as { playSessionId?: string; PlaySessionId?: string; mediaSourceId?: string; MediaSourceId?: string; api_key?: string } | undefined
+    const query = req.query as { playSessionId?: string; PlaySessionId?: string; mediaSourceId?: string; MediaSourceId?: string } | undefined
     const mediaSourceId = query?.mediaSourceId ?? query?.MediaSourceId
     const sessionMatches = (query?.playSessionId ?? query?.PlaySessionId) === `fetcherr-${id}`
     const sourceMatches = (query?.mediaSourceId ?? query?.MediaSourceId) === id
@@ -3945,8 +3985,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       && mediaSourceId?.startsWith(`${id}:candidate:`)
       && opts.validatePlaybackCandidate?.(candidate, id),
     )
-    const headersWithToken = query?.api_key
-      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': query.api_key }
+    const queryToken = tokenFromQuery(req.query)
+    const headersWithToken = queryToken
+      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': queryToken }
       : req.headers as Record<string, string | string[] | undefined>
     const user = requestUser(headersWithToken) ?? ((sessionMatches || sourceMatches || candidateMatches) ? fallbackUser() : null)
 
@@ -4003,5 +4044,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
     const playPath = `/play/${movie.imdbId}`
     return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
-  })
+  }
+
+  for (const path of streamRoutePaths) app.get(path, streamHandler)
 }
