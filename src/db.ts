@@ -89,6 +89,9 @@ export interface AppUser {
   maxRating: string
   searchEnabled: boolean
   authSource: AppUserAuthSource
+  stremioToken: string
+  stremioEnabled: boolean
+  stremioPlayCap: number
   createdAt: string
   updatedAt: string
 }
@@ -318,6 +321,18 @@ CREATE TABLE IF NOT EXISTS app_users (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+CREATE TABLE IF NOT EXISTS stremio_plays (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     TEXT NOT NULL,
+  played_on   TEXT NOT NULL,
+  media_type  TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  info_hash   TEXT NOT NULL DEFAULT '',
+  title       TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS stremio_plays_user_day ON stremio_plays(user_id, played_on);
+
 CREATE TABLE IF NOT EXISTS ui_sessions (
   token         TEXT PRIMARY KEY,
   user_id       TEXT NOT NULL,
@@ -511,6 +526,13 @@ export function getDb(): Database.Database {
     migrateAppUserRoles(_db)
     migrateAppUserSearchEnabled(_db)
     migrateAppUserAuthSource(_db)
+    // After migrateAppUserRoles, which rebuilds app_users from scratch on very old
+    // databases and would drop these columns if they were added before it ran.
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_token TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_enabled INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_play_cap INTEGER NOT NULL DEFAULT 30`) } catch { /* already exists */ }
+    // Partial, so every account without a token can hold '' without colliding.
+    try { _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS app_users_stremio_token ON app_users(stremio_token) WHERE stremio_token <> ''`) } catch { /* already exists */ }
     migrateLegacyUserData(_db)
   }
   return _db
@@ -569,6 +591,9 @@ function row2appUser(r: Record<string, unknown>): AppUser {
     maxRating: effectiveMaxRatingForRole(role, (r.max_rating as string) ?? 'unrestricted'),
     searchEnabled: r.search_enabled == null ? defaultSearchEnabledForRole(role) : Number(r.search_enabled) !== 0,
     authSource: r.auth_source === 'ldap' ? 'ldap' : 'local',
+    stremioToken: (r.stremio_token as string) ?? '',
+    stremioEnabled: Number(r.stremio_enabled ?? 0) !== 0,
+    stremioPlayCap: Number(r.stremio_play_cap ?? 30),
     createdAt: (r.created_at as string) ?? '',
     updatedAt: (r.updated_at as string) ?? '',
   }
@@ -1689,6 +1714,70 @@ export function deleteUser(userId: string): void {
     db.prepare(`DELETE FROM user_item_data WHERE user_id = ?`).run(userId)
     db.prepare(`DELETE FROM app_users WHERE id = ?`).run(userId)
   })()
+}
+
+// ── Stremio addon access ─────────────────────────────────────────────────────
+
+export function mintStremioToken(userId: string): string {
+  const token = randomBytes(32).toString('base64url')
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_token = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(token, userId)
+  return token
+}
+
+export function clearStremioToken(userId: string): void {
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_token = '', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(userId)
+}
+
+export function setStremioEnabled(userId: string, enabled: boolean): void {
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(enabled ? 1 : 0, userId)
+}
+
+export function setStremioPlayCap(userId: string, cap: number): void {
+  const safe = Number.isFinite(cap) && cap >= 0 ? Math.floor(cap) : 30
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_play_cap = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(safe, userId)
+}
+
+export function getUserByStremioToken(token: string): AppUser | null {
+  if (!token) return null
+  const row = getDb().prepare(`SELECT * FROM app_users WHERE stremio_token = ?`).get(token) as Record<string, unknown> | undefined
+  return row ? row2appUser(row) : null
+}
+
+export function countStremioPlaysToday(userId: string): number {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS n FROM stremio_plays
+    WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
+  `).get(userId) as { n: number }
+  return row.n
+}
+
+export function recordStremioPlay(play: {
+  userId: string
+  mediaType: string
+  externalId: string
+  infoHash: string
+  title: string
+}): void {
+  getDb().prepare(`
+    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+    VALUES (?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ?)
+  `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.title)
 }
 
 export function authEnabled(): boolean {
