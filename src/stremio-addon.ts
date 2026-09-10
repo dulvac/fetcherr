@@ -74,7 +74,10 @@ export interface PlayUrlContext {
 }
 
 export function playUrlFor(ctx: PlayUrlContext, infoHash: string): string {
-  return `${ctx.origin}/stremio/${ctx.token}/play/${ctx.mediaType}/${encodeURIComponent(ctx.externalId)}/${infoHash}`
+  // Encode every caller-supplied segment. Tokens are base64url and hashes are
+  // hex today, so nothing needs it, but this function builds a URL and should
+  // not depend on its callers staying disciplined.
+  return `${ctx.origin}/stremio/${encodeURIComponent(ctx.token)}/play/${ctx.mediaType}/${encodeURIComponent(ctx.externalId)}/${encodeURIComponent(infoHash)}`
 }
 
 export function toStremioStreams(streams: Stream[], ctx: PlayUrlContext): Record<string, unknown>[] {
@@ -85,11 +88,19 @@ export function toStremioStreams(streams: Stream[], ctx: PlayUrlContext): Record
     const hash = extractHashFromStream(stream)
     if (!hash || seen.has(hash)) continue
     seen.add(hash)
+    // Truthiness, not typeof: an empty bingeGroup is a string, so a typeof check
+    // would pass '' through and skip the per-hash fallback, and every stream
+    // carrying '' would share one binge group. Stremio picks the next episode's
+    // source from that. An empty filename and a zero videoSize would likewise
+    // render as a blank name and a zero-byte file, so leave them out entirely.
+    const upstreamBingeGroup = stream.behaviorHints?.bingeGroup
+    const upstreamFilename = stream.behaviorHints?.filename
+    const upstreamVideoSize = stream.behaviorHints?.videoSize
     const behaviorHints: Record<string, unknown> = {
-      bingeGroup: typeof stream.behaviorHints?.bingeGroup === 'string' ? stream.behaviorHints.bingeGroup : `fetcherr-${hash}`,
+      bingeGroup: typeof upstreamBingeGroup === 'string' && upstreamBingeGroup ? upstreamBingeGroup : `fetcherr-${hash}`,
     }
-    if (typeof stream.behaviorHints?.filename === 'string') behaviorHints.filename = stream.behaviorHints.filename
-    if (typeof stream.behaviorHints?.videoSize === 'number') behaviorHints.videoSize = stream.behaviorHints.videoSize
+    if (typeof upstreamFilename === 'string' && upstreamFilename) behaviorHints.filename = upstreamFilename
+    if (typeof upstreamVideoSize === 'number' && upstreamVideoSize > 0) behaviorHints.videoSize = upstreamVideoSize
     out.push({
       name: stream.name ?? 'Fetcherr',
       description: stream.title ?? stream.description ?? '',
@@ -105,7 +116,16 @@ export function noticeStreams(message: string, origin: string): Record<string, u
 }
 
 export function orderByPinnedHash(streams: Stream[], infoHash: string): Stream[] {
-  const pinned = streams.filter(stream => extractHashFromStream(stream) === infoHash)
-  const rest = streams.filter(stream => extractHashFromStream(stream) !== infoHash)
+  // Hex infohashes are case-insensitive and extractHashFromStream lowercases
+  // what it returns, so normalize the pin here rather than trusting every
+  // caller to. Comparing raw made a differently-cased pin match nothing and
+  // fall through to the ranked order, silently serving another release.
+  const wanted = infoHash.toLowerCase()
+  // An unmatched pin still returns the ranked order on purpose. Stremio caches
+  // stream lists for a long time and re-resolution legitimately reorders and
+  // drops candidates, so failing hard on a stale pin would break playback for
+  // someone who did nothing wrong.
+  const pinned = streams.filter(stream => extractHashFromStream(stream) === wanted)
+  const rest = streams.filter(stream => extractHashFromStream(stream) !== wanted)
   return [...pinned, ...rest]
 }

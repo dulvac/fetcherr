@@ -69,3 +69,44 @@ test('an unknown pin keeps the ranked order rather than failing', () => {
   const ordered = orderByPinnedHash(streams, 'c'.repeat(40))
   assert.equal((ordered[0] as { infoHash: string }).infoHash, hashA)
 })
+
+// Hex infohashes are case-insensitive by definition, and extractHashFromStream
+// lowercases everything it returns, so a pin that differs only in case must
+// still match. Comparing raw would silently serve a different release.
+
+test('an uppercase pin still puts the requested stream first', () => {
+  const streams = [{ infoHash: hashA }, { infoHash: hashB }] as never
+  const ordered = orderByPinnedHash(streams, hashB.toUpperCase())
+  assert.equal(ordered.length, 2)
+  assert.equal((ordered[0] as { infoHash: string }).infoHash, hashB)
+  assert.equal((ordered[1] as { infoHash: string }).infoHash, hashA)
+})
+
+test('a mixed-case pin still puts the requested stream first', () => {
+  const mixed = `${'B'.repeat(20)}${'b'.repeat(20)}`
+  const streams = [{ infoHash: hashA }, { infoHash: hashB }] as never
+  const ordered = orderByPinnedHash(streams, mixed)
+  assert.equal((ordered[0] as { infoHash: string }).infoHash, hashB)
+})
+
+test('an empty upstream bingeGroup falls back to the per-hash group', () => {
+  const mapped = toStremioStreams([
+    { name: 'n', infoHash: hashA, behaviorHints: { bingeGroup: '' } },
+  ] as never, ctx)
+  assert.deepEqual(mapped[0].behaviorHints, { bingeGroup: `fetcherr-${hashA}` })
+})
+
+test('an empty filename and a zero videoSize are omitted, not emitted', () => {
+  const mapped = toStremioStreams([
+    { name: 'n', infoHash: hashA, behaviorHints: { filename: '', videoSize: 0 } },
+  ] as never, ctx)
+  assert.deepEqual(mapped[0].behaviorHints, { bingeGroup: `fetcherr-${hashA}` })
+})
+
+test('a token or hash needing encoding comes out encoded', () => {
+  const hostile = { ...ctx, token: 'to/ken?a=b' }
+  assert.equal(
+    playUrlFor(hostile, 'ab/cd'),
+    'https://streaming.example.net/stremio/to%2Fken%3Fa%3Db/play/movie/tt0111161/ab%2Fcd',
+  )
+})
