@@ -62,3 +62,40 @@ test('plays are counted per user per day', () => {
   const other = db.getUserByUsername('friend2')!
   assert.equal(db.countStremioPlaysToday(other.id), 0)
 })
+
+// Reserving counts the slot in the same statement that checks the cap, so a
+// burst cannot read the count before the first write lands.
+
+test('reserving stops at the cap and returns null', () => {
+  const u = db.createUser('reserver', 'pw', 'user', 'unrestricted')
+  const play = { userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'c'.repeat(40), cap: 2 }
+  assert.notEqual(db.reserveStremioPlay(play), null)
+  assert.notEqual(db.reserveStremioPlay(play), null)
+  assert.equal(db.reserveStremioPlay(play), null)
+  assert.equal(db.countStremioPlaysToday(u.id), 2)
+})
+
+test('a released reservation frees the slot again', () => {
+  const u = db.createUser('releaser', 'pw', 'user', 'unrestricted')
+  const play = { userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'd'.repeat(40), cap: 1 }
+  const id = db.reserveStremioPlay(play)
+  assert.notEqual(id, null)
+  assert.equal(db.reserveStremioPlay(play), null)
+  db.releaseStremioPlay(id!)
+  assert.equal(db.countStremioPlaysToday(u.id), 0)
+  assert.notEqual(db.reserveStremioPlay(play), null)
+})
+
+test('finalizing sets the title on the reserved row', () => {
+  const u = db.createUser('finalizer', 'pw', 'user', 'unrestricted')
+  const id = db.reserveStremioPlay({ userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'e'.repeat(40), cap: 5 })
+  db.finalizeStremioPlay(id!, 'Shawshank.1080p.mkv')
+  const row = db.getDb().prepare(`SELECT title FROM stremio_plays WHERE id = ?`).get(id) as { title: string }
+  assert.equal(row.title, 'Shawshank.1080p.mkv')
+})
+
+test('a cap of zero refuses every reservation', () => {
+  const u = db.createUser('zero-cap', 'pw', 'user', 'unrestricted')
+  assert.equal(db.reserveStremioPlay({ userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'f'.repeat(40), cap: 0 }), null)
+  assert.equal(db.countStremioPlaysToday(u.id), 0)
+})

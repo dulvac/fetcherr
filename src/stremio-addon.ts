@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { config } from './config.js'
 import {
-  countStremioPlaysToday, getUserByStremioToken, hasRatingLimit, recordStremioPlay, type AppUser,
+  countStremioPlaysToday, finalizeStremioPlay, getUserByStremioToken, hasRatingLimit,
+  recordStremioPlay, releaseStremioPlay, reserveStremioPlay, type AppUser,
 } from './db.js'
 import { buildPlaybackOrigin } from './play-auth.js'
 import { extractHashFromStream, type Stream, type StremioMediaType, type StremioMeta } from './sootio.js'
@@ -264,7 +265,13 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       return reply.code(404).send(NOT_FOUND)
     }
 
-    if (countStremioPlaysToday(user.id) >= playCapFor(user)) {
+    // Reserve the slot before resolving, in one statement, so a burst cannot
+    // outrun the count. Admins are exempt, so they skip the reservation
+    // entirely rather than reserving against a fake cap.
+    const reservationId = user.role === 'admin'
+      ? null
+      : reserveStremioPlay({ userId: user.id, mediaType: parsed.mediaType, externalId: parsed.externalId, infoHash: wanted, cap: user.stremioPlayCap })
+    if (user.role !== 'admin' && reservationId === null) {
       app.log.warn(`stremio: play cap reached for ${user.username}`)
       return reply.code(429).send({ error: 'Daily play limit reached' })
     }
@@ -273,7 +280,10 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     try {
       const streams = await opts.fetchStreams(parsed.mediaType, parsed.externalId)
       const ordered = orderByPinnedHash(streams, wanted)
-      if (!ordered.length) return reply.code(404).send({ error: 'No streams found' })
+      if (!ordered.length) {
+        if (reservationId !== null) releaseStremioPlay(reservationId)
+        return reply.code(404).send({ error: 'No streams found' })
+      }
       // Falling through to the next candidate is deliberate: Stremio caches
       // stream lists for a long time and re-resolution legitimately drops
       // candidates. But it must not be silent, or someone gets a different
@@ -283,7 +293,10 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
         app.log.warn(`stremio: pinned ${wanted} is gone, playing ${playing ?? 'unknown'} instead for ${label}`)
       }
       const resolved = await opts.resolvePlayback(ordered, label, `/stremio/play/${parsed.mediaType}/${parsed.externalId}`)
-      recordStremioPlay({
+      if (reservationId !== null) finalizeStremioPlay(reservationId, resolved.filename ?? '')
+      // Admins hold no reservation, so their play is still recorded here: the
+      // cap does not apply to them but the accounting does.
+      else recordStremioPlay({
         userId: user.id,
         mediaType: parsed.mediaType,
         externalId: parsed.externalId,
@@ -293,6 +306,8 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       app.log.info(`stremio: play ${label} hash=${wanted} file=${resolved.filename ?? '?'}`)
       return reply.redirect(resolved.url, 302)
     } catch (err) {
+      // The slot was never spent, so it must not count against today.
+      if (reservationId !== null) releaseStremioPlay(reservationId)
       app.log.warn(`stremio: no playable stream for ${label}: ${err}`)
       return reply.code(404).send({ error: 'No stream available' })
     }

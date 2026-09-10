@@ -1780,6 +1780,40 @@ export function recordStremioPlay(play: {
   `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.title)
 }
 
+// Reserve a slot and count it in the same statement, because check-then-act
+// across an await does not hold: better-sqlite3 is synchronous and node is
+// single-threaded, so every request in a burst read the count before the first
+// write landed, and 20 concurrent requests against a cap of 1 all passed. The
+// cap is read inside the INSERT as a bound parameter, so SQLite's own statement
+// atomicity is what enforces it.
+// Returns the row id to finalize or release, or null when the cap is reached.
+export function reserveStremioPlay(play: {
+  userId: string
+  mediaType: string
+  externalId: string
+  infoHash: string
+  cap: number
+}): number | null {
+  const info = getDb().prepare(`
+    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+    SELECT ?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ''
+    WHERE (
+      SELECT COUNT(*) FROM stremio_plays
+      WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
+    ) < ?
+  `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.userId, play.cap)
+  return info.changes === 1 ? Number(info.lastInsertRowid) : null
+}
+
+// Resolution failed, so the slot was never spent and must not count.
+export function releaseStremioPlay(id: number): void {
+  getDb().prepare(`DELETE FROM stremio_plays WHERE id = ?`).run(id)
+}
+
+export function finalizeStremioPlay(id: number, title: string): void {
+  getDb().prepare(`UPDATE stremio_plays SET title = ? WHERE id = ?`).run(title, id)
+}
+
 export function authEnabled(): boolean {
   return countUsers() > 0
 }

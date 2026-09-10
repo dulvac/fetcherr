@@ -269,3 +269,69 @@ test('an unrestricted account still plays with the gate in place', async () => {
   assert.equal(db.countStremioPlaysToday(adult.id), 1)
   await app.close()
 })
+
+// ── Fix round 1, commit 2: the cap must hold under concurrency ───────────────
+//
+// better-sqlite3 is synchronous and node is single-threaded, so every request
+// in a burst finished its count read before the first write landed. The window
+// was the whole burst, which on a leaked token is the containment mechanism
+// gone: N concurrent requests bought N debrid resolutions.
+
+test('20 concurrent plays against a cap of 1 yield exactly one 302', async () => {
+  const burst = db.createUser('burst', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(burst.id, true)
+  db.setStremioPlayCap(burst.id, 1)
+  const burstToken = db.mintStremioToken(burst.id)
+  const app = await buildApp()
+
+  const results = await Promise.all(Array.from({ length: 20 }, () =>
+    app.inject({ method: 'GET', url: `/stremio/${burstToken}/play/movie/tt0111161/${hashA}` })))
+
+  const redirects = results.filter(res => res.statusCode === 302)
+  const refusals = results.filter(res => res.statusCode === 429)
+  assert.equal(redirects.length, 1, `expected exactly one 302, got ${redirects.length}`)
+  assert.equal(refusals.length, 19)
+  assert.equal(db.countStremioPlaysToday(burst.id), 1)
+  await app.close()
+})
+
+test('a resolver that throws leaves no play recorded', async () => {
+  const flaky = db.createUser('flaky', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(flaky.id, true)
+  const flakyToken = db.mintStremioToken(flaky.id)
+  const app = await buildApp({ resolvePlayback: async () => { throw new Error('torbox down') } })
+  const res = await app.inject({ method: 'GET', url: `/stremio/${flakyToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(res.statusCode, 404)
+  assert.equal(db.countStremioPlaysToday(flaky.id), 0)
+  await app.close()
+})
+
+test('a released slot does not consume the cap', async () => {
+  const retry = db.createUser('retry', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(retry.id, true)
+  db.setStremioPlayCap(retry.id, 1)
+  const retryToken = db.mintStremioToken(retry.id)
+
+  const failing = await buildApp({ resolvePlayback: async () => { throw new Error('torbox down') } })
+  assert.equal((await failing.inject({ method: 'GET', url: `/stremio/${retryToken}/play/movie/tt0111161/${hashA}` })).statusCode, 404)
+  await failing.close()
+
+  const working = await buildApp()
+  assert.equal((await working.inject({ method: 'GET', url: `/stremio/${retryToken}/play/movie/tt0111161/${hashA}` })).statusCode, 302)
+  assert.equal(db.countStremioPlaysToday(retry.id), 1)
+  await working.close()
+})
+
+test('an admin is not held to the cap', async () => {
+  const boss = db.createUser('boss', 'pw', 'admin', 'unrestricted')
+  db.setStremioEnabled(boss.id, true)
+  db.setStremioPlayCap(boss.id, 1)
+  const bossToken = db.mintStremioToken(boss.id)
+  const app = await buildApp()
+  for (let i = 0; i < 3; i++) {
+    const res = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${hashA}` })
+    assert.equal(res.statusCode, 302)
+  }
+  assert.equal(db.countStremioPlaysToday(boss.id), 3)
+  await app.close()
+})
