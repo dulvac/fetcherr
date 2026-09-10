@@ -206,6 +206,15 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     app.log.info(`stremio: ${req.method} ${redactStremioToken(req.url)} -> ${reply.statusCode} in ${Math.round(reply.elapsedTime)}ms`)
   })
 
+  // Anything under the prefix that matches no route below is answered here, not
+  // by the root not-found handler, which logs with the root logger and wrote the
+  // token out twice: once in the req serializer and once in "Route ... not
+  // found". /configure and /meta/... are ordinary traffic from a client holding
+  // a manifest cached from another configuration, and a trailing slash is one
+  // typo away. Fastify prefers the specific routes over this wildcard, so it
+  // shadows nothing. Same body as an invalid token.
+  app.all('/stremio/*', SILENCE_DEFAULT_REQUEST_LOG, async (_req, reply) => reply.code(404).send(NOT_FOUND))
+
   app.get('/stremio/:token/manifest.json', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
     const { token } = req.params as { token: string }
     if (!userForToken(token)) return reply.code(404).send(NOT_FOUND)

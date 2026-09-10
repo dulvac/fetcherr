@@ -220,10 +220,52 @@ test('no log line carries the raw token', async () => {
     `/stremio/${token}/stream/movie/tt0111161.json`,
     `/stremio/${token}/play/movie/tt0111161/${hashA}`,
   ]) await app.inject({ method: 'GET', url })
+  // Unmatched paths under the prefix are most of what a probing or misconfigured
+  // client sends: /configure is what the containment test requests, and /meta/
+  // is what a client tries when it has a manifest cached from another
+  // configuration. Each of these used to log the token twice.
+  for (const url of [
+    `/stremio/${token}/configure`,
+    `/stremio/${token}/meta/movie/tt0111161.json`,
+    `/stremio/${token}/catalog/movie/top.json`,
+    `/stremio/${token}/manifest.json/`,
+  ]) await app.inject({ method: 'GET', url })
+  await app.inject({ method: 'POST', url: `/stremio/${token}/manifest.json` })
   await app.close()
   const logged = lines.join('')
   assert.ok(lines.length > 0, 'expected the logger to have produced output')
   assert.ok(!logged.includes(token), `the raw token leaked into the logs: ${logged}`)
+})
+
+test('unmatched paths under the prefix answer like an invalid token', async () => {
+  const app = await buildApp()
+  const invalid = await app.inject({ method: 'GET', url: '/stremio/nonsense/manifest.json' })
+  for (const url of [
+    `/stremio/${token}/configure`,
+    `/stremio/${token}/meta/movie/tt0111161.json`,
+    `/stremio/${token}/manifest.json/`,
+  ]) {
+    const res = await app.inject({ method: 'GET', url })
+    assert.equal(res.statusCode, 404)
+    assert.deepEqual(res.json(), invalid.json())
+  }
+  const wrongMethod = await app.inject({ method: 'POST', url: `/stremio/${token}/manifest.json` })
+  assert.equal(wrongMethod.statusCode, 404)
+  assert.deepEqual(wrongMethod.json(), invalid.json())
+  await app.close()
+})
+
+test('the catch-all does not shadow the three real routes', async () => {
+  const app = await buildApp()
+  const manifest = await app.inject({ method: 'GET', url: `/stremio/${token}/manifest.json` })
+  const stream = await app.inject({ method: 'GET', url: `/stremio/${token}/stream/movie/tt0111161.json` })
+  const play = await app.inject({ method: 'GET', url: `/stremio/${token}/play/movie/tt0111161/${hashB}` })
+  assert.equal(manifest.statusCode, 200)
+  assert.deepEqual(manifest.json().resources, ['stream'])
+  assert.equal(stream.statusCode, 200)
+  assert.equal((stream.json().streams as unknown[]).length, 2)
+  assert.equal(play.statusCode, 302)
+  await app.close()
 })
 
 // ── Fix round 1, commit 1: the rating gate belongs on play too ───────────────
