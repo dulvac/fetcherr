@@ -6,6 +6,9 @@ import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
 import { stremioAddonRoutes } from './stremio-addon.js'
+// Fork-only, and deliberately not imported by the addon module: see the header of
+// src/ldap-stremio-sweep.ts.
+import { startStremioAccessSweep } from './ldap-stremio-sweep.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
@@ -2015,6 +2018,11 @@ await app.register(stremioAddonRoutes, {
   },
   fetchMeta: (mediaType, imdbId) => fetchStremioMeta(mediaType, imdbId),
 })
+
+// An install URL is a bearer credential checked against our own row, so removing
+// someone from media-users in Authentik does not stop them streaming on its own.
+// Inert unless LDAP_BIND_DN, LDAP_BIND_PASSWORD and LDAP_GROUP_DN are all set.
+startStremioAccessSweep(app)
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
 
