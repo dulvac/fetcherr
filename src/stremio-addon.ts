@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { config } from './config.js'
 import {
   countStremioPlaysToday, finalizeStremioPlay, getUserByStremioToken, hasRatingLimit,
-  recordStremioPlay, releaseStremioPlay, reserveStremioPlay, type AppUser,
+  releaseStremioPlay, reserveStremioPlay, type AppUser,
 } from './db.js'
 import { buildPlaybackOrigin } from './play-auth.js'
 import { extractHashFromStream, type Stream, type StremioMediaType, type StremioMeta } from './sootio.js'
@@ -200,8 +200,14 @@ function userForToken(token: string): AppUser | null {
   return user
 }
 
+// Admins are bounded too, just generously. The owner's own install URL is the one
+// pasted into a chat while showing someone how to install it, screenshotted during
+// setup, and installed on the most devices, so it needs the brake more than most.
+// 200 is far above any real day's viewing and still bounds a leaked token.
+const ADMIN_PLAY_CAP = 200
+
 function playCapFor(user: AppUser): number {
-  return user.role === 'admin' ? Infinity : user.stremioPlayCap
+  return user.role === 'admin' ? ADMIN_PLAY_CAP : user.stremioPlayCap
 }
 
 // The household's only parental control. Both routes run it, because enforcing
@@ -303,12 +309,16 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     // Reserve the slot before resolving, atomically, so a burst cannot outrun the
     // count. A same-day request for the same file reuses its row rather than
     // taking a second slot: the redirect is no-store, so a client re-enters this
-    // route on every range request and seek. Admins are exempt, so they skip the
-    // reservation entirely rather than reserving against a fake cap.
-    const reservation = user.role === 'admin'
-      ? null
-      : reserveStremioPlay({ userId: user.id, mediaType: parsed.mediaType, externalId: parsed.externalId, infoHash: wanted, cap: playCapFor(user) })
-    if (user.role !== 'admin' && reservation === null) {
+    // route on every range request and seek. Every account takes this path,
+    // admins included, so playCapFor is the only place a cap comes from.
+    const reservation = reserveStremioPlay({
+      userId: user.id,
+      mediaType: parsed.mediaType,
+      externalId: parsed.externalId,
+      infoHash: wanted,
+      cap: playCapFor(user),
+    })
+    if (reservation === null) {
       app.log.warn(`stremio: play cap reached for ${user.username}`)
       return reply.code(429).send({ error: 'Daily play limit reached' })
     }
@@ -339,16 +349,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
         app.log.warn(`stremio: resolver returned no url for ${label}`)
         return reply.code(404).send({ error: 'No stream available' })
       }
-      if (reservation !== null) finalizeStremioPlay(reservation.id, resolved.filename ?? '')
-      // Admins hold no reservation, so their play is still recorded here: the
-      // cap does not apply to them but the accounting does.
-      else recordStremioPlay({
-        userId: user.id,
-        mediaType: parsed.mediaType,
-        externalId: parsed.externalId,
-        infoHash: wanted,
-        title: resolved.filename ?? '',
-      })
+      finalizeStremioPlay(reservation.id, resolved.filename ?? '')
       app.log.info(`stremio: play ${label} hash=${wanted} file=${resolved.filename ?? '?'}`)
       // The whole design rests on play re-resolving at click time, so nothing
       // may cache this redirect and pin a CDN URL that expires.

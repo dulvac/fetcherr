@@ -404,14 +404,16 @@ test('a released slot does not consume the cap', async () => {
   await working.close()
 })
 
-test('an admin is not held to the cap', async () => {
+test("an admin's own cap column does not bind them", async () => {
   const boss = db.createUser('boss', 'pw', 'admin', 'unrestricted')
   db.setStremioEnabled(boss.id, true)
   db.setStremioPlayCap(boss.id, 1)
   const bossToken = db.mintStremioToken(boss.id)
   const app = await buildApp()
-  for (let i = 0; i < 3; i++) {
-    const res = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${hashA}` })
+  // Three different titles against a stored cap of 1: admins use the role's own
+  // cap, not the column, so all three play and all three are recorded.
+  for (const imdbId of ['tt0111161', 'tt0903747', 'tt1375666']) {
+    const res = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/${imdbId}/${hashA}` })
     assert.equal(res.statusCode, 302)
   }
   assert.equal(db.countStremioPlaysToday(boss.id), 3)
@@ -611,5 +613,48 @@ test('a repeat still costs a slot once the cap is full of other titles', async (
   assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt1375666/${hashA}` })).statusCode, 429)
   assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })).statusCode, 302)
   assert.equal(db.countStremioPlaysToday(user.id), 2)
+  await app.close()
+})
+
+// ── Final wave, commit 3: admins get a finite cap too ───────────────────────
+//
+// The spec exempted admin. The owner's own install URL is the one pasted into a
+// chat while showing someone how to install it, screenshotted during setup, and
+// installed on the most devices, so two of the three brakes apply to it and the
+// sharpest one did not.
+
+test('an admin play is reserved and recorded like anyone else', async () => {
+  const boss = db.createUser('finite-admin', 'pw', 'admin', 'unrestricted')
+  db.setStremioEnabled(boss.id, true)
+  const bossToken = db.mintStremioToken(boss.id)
+  const app = await buildApp()
+  assert.equal((await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${hashA}` })).statusCode, 302)
+  assert.equal(db.countStremioPlaysToday(boss.id), 1)
+  // And a repeat is one slot for an admin as well.
+  await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(db.countStremioPlaysToday(boss.id), 1)
+  await app.close()
+})
+
+test('an admin at the 200 cap is refused', async () => {
+  const boss = db.createUser('busy-admin', 'pw', 'admin', 'unrestricted')
+  db.setStremioEnabled(boss.id, true)
+  const bossToken = db.mintStremioToken(boss.id)
+  // Fill the day to the admin cap directly; 200 requests through the route would
+  // be slow and would prove nothing extra.
+  const insert = db.getDb().prepare(`
+    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+    VALUES (?, strftime('%Y-%m-%d','now','localtime'), 'movie', 'tt0111161', ?, 'filler')
+  `)
+  for (let i = 0; i < 200; i++) insert.run(boss.id, i.toString(16).padStart(40, '0'))
+  assert.equal(db.countStremioPlaysToday(boss.id), 200)
+
+  const app = await buildApp()
+  const res = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0903747/${hashB}` })
+  assert.equal(res.statusCode, 429, 'an admin is bounded too')
+  assert.equal(db.countStremioPlaysToday(boss.id), 200, 'and the refusal is not counted')
+  // A file already played today still works, because that row exists.
+  const repeat = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${'0'.repeat(40)}` })
+  assert.equal(repeat.statusCode, 302)
   await app.close()
 })
