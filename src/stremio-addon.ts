@@ -300,23 +300,27 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       return reply.code(404).send(NOT_FOUND)
     }
 
-    // Reserve the slot before resolving, in one statement, so a burst cannot
-    // outrun the count. Admins are exempt, so they skip the reservation
-    // entirely rather than reserving against a fake cap.
-    const reservationId = user.role === 'admin'
+    // Reserve the slot before resolving, atomically, so a burst cannot outrun the
+    // count. A same-day request for the same file reuses its row rather than
+    // taking a second slot: the redirect is no-store, so a client re-enters this
+    // route on every range request and seek. Admins are exempt, so they skip the
+    // reservation entirely rather than reserving against a fake cap.
+    const reservation = user.role === 'admin'
       ? null
-      : reserveStremioPlay({ userId: user.id, mediaType: parsed.mediaType, externalId: parsed.externalId, infoHash: wanted, cap: user.stremioPlayCap })
-    if (user.role !== 'admin' && reservationId === null) {
+      : reserveStremioPlay({ userId: user.id, mediaType: parsed.mediaType, externalId: parsed.externalId, infoHash: wanted, cap: playCapFor(user) })
+    if (user.role !== 'admin' && reservation === null) {
       app.log.warn(`stremio: play cap reached for ${user.username}`)
       return reply.code(429).send({ error: 'Daily play limit reached' })
     }
+    // Only a row this request created may be released by this request's failure.
+    const releasableId = reservation?.created ? reservation.id : null
 
     const label = `stremio ${parsed.mediaType} ${parsed.externalId} (${user.username})`
     try {
       const streams = await opts.fetchStreams(parsed.mediaType, parsed.externalId)
       const ordered = orderByPinnedHash(streams, wanted)
       if (!ordered.length) {
-        if (reservationId !== null) releaseStremioPlay(reservationId)
+        if (releasableId !== null) releaseStremioPlay(releasableId)
         return reply.code(404).send({ error: 'No streams found' })
       }
       // Falling through to the next candidate is deliberate: Stremio caches
@@ -331,11 +335,11 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       // A resolver that returns nothing usable must not spend the slot or send
       // the client a redirect to an empty Location.
       if (!resolved?.url) {
-        if (reservationId !== null) releaseStremioPlay(reservationId)
+        if (releasableId !== null) releaseStremioPlay(releasableId)
         app.log.warn(`stremio: resolver returned no url for ${label}`)
         return reply.code(404).send({ error: 'No stream available' })
       }
-      if (reservationId !== null) finalizeStremioPlay(reservationId, resolved.filename ?? '')
+      if (reservation !== null) finalizeStremioPlay(reservation.id, resolved.filename ?? '')
       // Admins hold no reservation, so their play is still recorded here: the
       // cap does not apply to them but the accounting does.
       else recordStremioPlay({
@@ -350,8 +354,9 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       // may cache this redirect and pin a CDN URL that expires.
       return reply.header('Cache-Control', 'no-store').redirect(resolved.url, 302)
     } catch (err) {
-      // The slot was never spent, so it must not count against today.
-      if (reservationId !== null) releaseStremioPlay(reservationId)
+      // The slot was never spent, so it must not count against today. A reused row
+      // belongs to an earlier successful request and stays.
+      if (releasableId !== null) releaseStremioPlay(releasableId)
       app.log.warn(`stremio: no playable stream for ${label}: ${err}`)
       return reply.code(404).send({ error: 'No stream available' })
     }

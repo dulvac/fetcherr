@@ -1787,22 +1787,53 @@ export function recordStremioPlay(play: {
 // cap is read inside the INSERT as a bound parameter, so SQLite's own statement
 // atomicity is what enforces it.
 // Returns the row id to finalize or release, or null when the cap is reached.
+export interface StremioPlayReservation {
+  id: number
+  // False when an earlier request for the same file today already took the slot.
+  // The caller must not release a row it did not create.
+  created: boolean
+}
+
+// A slot is a title, not an HTTP request. Cache-Control: no-store on the play
+// redirect exists so a client cannot pin an expiring CDN URL, which means an
+// obedient client re-enters the play route on every range request, seek and
+// reconnect. Inserting per request turned that into "Daily play limit reached"
+// mid-film, so a same-day row for the same file is reused instead.
+//
+// Wrapped in a transaction so the select and the insert cannot interleave: the
+// atomicity Task 7's fix established has to survive the second branch, or a burst
+// of 20 requests would slip past the cap again.
 export function reserveStremioPlay(play: {
   userId: string
   mediaType: string
   externalId: string
   infoHash: string
   cap: number
-}): number | null {
-  const info = getDb().prepare(`
-    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
-    SELECT ?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ''
-    WHERE (
-      SELECT COUNT(*) FROM stremio_plays
-      WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
-    ) < ?
-  `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.userId, play.cap)
-  return info.changes === 1 ? Number(info.lastInsertRowid) : null
+}): StremioPlayReservation | null {
+  const db = getDb()
+  const reserve = db.transaction((): StremioPlayReservation | null => {
+    const existing = db.prepare(`
+      SELECT id FROM stremio_plays
+      WHERE user_id = ?
+        AND played_on = strftime('%Y-%m-%d','now','localtime')
+        AND external_id = ?
+        AND info_hash = ?
+      ORDER BY id ASC
+      LIMIT 1
+    `).get(play.userId, play.externalId, play.infoHash) as { id: number } | undefined
+    if (existing) return { id: Number(existing.id), created: false }
+
+    const info = db.prepare(`
+      INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+      SELECT ?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ''
+      WHERE (
+        SELECT COUNT(*) FROM stremio_plays
+        WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
+      ) < ?
+    `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.userId, play.cap)
+    return info.changes === 1 ? { id: Number(info.lastInsertRowid), created: true } : null
+  })
+  return reserve()
 }
 
 // Resolution failed, so the slot was never spent and must not count.

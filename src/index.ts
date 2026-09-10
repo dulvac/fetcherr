@@ -2006,7 +2006,15 @@ await app.register(stremioAddonRoutes, {
     // from the Jellyfin Stremio path's (/play/stremio/...). The two surfaces build
     // different candidate sets, so a shared failed-play cache entry would let one
     // surface's dead end suppress the other's working stream. Do not unify them.
-    const resolved = await resolvePlayableStream(streams, label, cacheKey, undefined, true)
+    //
+    // Through getOrCreatePlaybackResolution like every Jellyfin play route, so a
+    // repeat within its five-minute window costs one debrid resolution. The addon
+    // needs this more than they do: its redirect is no-store, so an obedient
+    // client comes back here on every range request, seek and reconnect.
+    const { promise, reused } = getOrCreatePlaybackResolution(cacheKey, label, () =>
+      resolvePlayableStream(streams, label, cacheKey, undefined, true))
+    if (reused) app.log.info(`stremio: using in-flight resolver for ${label}`)
+    const resolved = await promise
     // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
     // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back
     // while the client reports progress. A Stremio client cannot do that: it

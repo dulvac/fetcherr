@@ -66,36 +66,84 @@ test('plays are counted per user per day', () => {
 // Reserving counts the slot in the same statement that checks the cap, so a
 // burst cannot read the count before the first write lands.
 
+const play = (userId: string, overrides: Partial<{ mediaType: string; externalId: string; infoHash: string; cap: number }> = {}) => ({
+  userId, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'c'.repeat(40), cap: 2, ...overrides,
+})
+
 test('reserving stops at the cap and returns null', () => {
   const u = db.createUser('reserver', 'pw', 'user', 'unrestricted')
-  const play = { userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'c'.repeat(40), cap: 2 }
-  assert.notEqual(db.reserveStremioPlay(play), null)
-  assert.notEqual(db.reserveStremioPlay(play), null)
-  assert.equal(db.reserveStremioPlay(play), null)
+  // Distinct files, since a repeat of the same file reuses its row by design.
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: 'a'.repeat(40) }))?.created, true)
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: 'b'.repeat(40) }))?.created, true)
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: 'c'.repeat(40) })), null)
   assert.equal(db.countStremioPlaysToday(u.id), 2)
+})
+
+// A slot is a title, not a request: the play redirect is no-store, so a client
+// comes back on every range request and seek.
+test('a repeat of the same file today reuses its row instead of taking a slot', () => {
+  const u = db.createUser('rewatch', 'pw', 'user', 'unrestricted')
+  const first = db.reserveStremioPlay(play(u.id, { cap: 1 }))
+  assert.equal(first?.created, true)
+  for (let i = 0; i < 4; i++) {
+    const again = db.reserveStremioPlay(play(u.id, { cap: 1 }))
+    assert.equal(again?.id, first!.id, 'the same file must map to the same row')
+    assert.equal(again?.created, false, 'and must not report itself as newly created')
+  }
+  assert.equal(db.countStremioPlaysToday(u.id), 1)
+})
+
+test('a different file for the same title is a separate slot', () => {
+  const u = db.createUser('twofiles', 'pw', 'user', 'unrestricted')
+  const a = db.reserveStremioPlay(play(u.id, { infoHash: 'a'.repeat(40) }))
+  const b = db.reserveStremioPlay(play(u.id, { infoHash: 'b'.repeat(40) }))
+  assert.notEqual(a!.id, b!.id)
+  assert.equal(b?.created, true)
+  assert.equal(db.countStremioPlaysToday(u.id), 2)
+})
+
+test('another account is not affected by a reservation', () => {
+  const mine = db.createUser('mine', 'pw', 'user', 'unrestricted')
+  const theirs = db.createUser('theirs', 'pw', 'user', 'unrestricted')
+  db.reserveStremioPlay(play(mine.id, { cap: 1 }))
+  assert.equal(db.reserveStremioPlay(play(theirs.id, { cap: 1 }))?.created, true)
+  assert.equal(db.countStremioPlaysToday(mine.id), 1)
+  assert.equal(db.countStremioPlaysToday(theirs.id), 1)
+})
+
+test("yesterday's row does not satisfy today's reservation", () => {
+  const u = db.createUser('yesterday', 'pw', 'user', 'unrestricted')
+  const hash = 'd'.repeat(40)
+  db.getDb().prepare(`
+    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+    VALUES (?, strftime('%Y-%m-%d','now','localtime','-1 day'), 'movie', 'tt0111161', ?, 'old')
+  `).run(u.id, hash)
+  assert.equal(db.countStremioPlaysToday(u.id), 0, "yesterday's play must not count today")
+  const reservation = db.reserveStremioPlay(play(u.id, { infoHash: hash, cap: 1 }))
+  assert.equal(reservation?.created, true, 'today needs its own row')
+  assert.equal(db.countStremioPlaysToday(u.id), 1)
 })
 
 test('a released reservation frees the slot again', () => {
   const u = db.createUser('releaser', 'pw', 'user', 'unrestricted')
-  const play = { userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'd'.repeat(40), cap: 1 }
-  const id = db.reserveStremioPlay(play)
-  assert.notEqual(id, null)
-  assert.equal(db.reserveStremioPlay(play), null)
-  db.releaseStremioPlay(id!)
+  const reservation = db.reserveStremioPlay(play(u.id, { infoHash: 'e'.repeat(40), cap: 1 }))
+  assert.notEqual(reservation, null)
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: 'f'.repeat(40), cap: 1 })), null)
+  db.releaseStremioPlay(reservation!.id)
   assert.equal(db.countStremioPlaysToday(u.id), 0)
-  assert.notEqual(db.reserveStremioPlay(play), null)
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: 'f'.repeat(40), cap: 1 }))?.created, true)
 })
 
 test('finalizing sets the title on the reserved row', () => {
   const u = db.createUser('finalizer', 'pw', 'user', 'unrestricted')
-  const id = db.reserveStremioPlay({ userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'e'.repeat(40), cap: 5 })
-  db.finalizeStremioPlay(id!, 'Shawshank.1080p.mkv')
-  const row = db.getDb().prepare(`SELECT title FROM stremio_plays WHERE id = ?`).get(id) as { title: string }
+  const reservation = db.reserveStremioPlay(play(u.id, { cap: 5 }))
+  db.finalizeStremioPlay(reservation!.id, 'Shawshank.1080p.mkv')
+  const row = db.getDb().prepare(`SELECT title FROM stremio_plays WHERE id = ?`).get(reservation!.id) as { title: string }
   assert.equal(row.title, 'Shawshank.1080p.mkv')
 })
 
 test('a cap of zero refuses every reservation', () => {
   const u = db.createUser('zero-cap', 'pw', 'user', 'unrestricted')
-  assert.equal(db.reserveStremioPlay({ userId: u.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'f'.repeat(40), cap: 0 }), null)
+  assert.equal(db.reserveStremioPlay(play(u.id, { cap: 0 })), null)
   assert.equal(db.countStremioPlaysToday(u.id), 0)
 })

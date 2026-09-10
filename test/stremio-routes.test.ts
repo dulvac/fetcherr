@@ -130,8 +130,9 @@ test('play stops at the cap and does not count the refusal', async () => {
   db.setStremioPlayCap(capped.id, 1)
   const cappedToken = db.mintStremioToken(capped.id)
   const app = await buildApp()
+  // Two different titles: repeating one title is deliberately one slot now.
   const first = await app.inject({ method: 'GET', url: `/stremio/${cappedToken}/play/movie/tt0111161/${hashA}` })
-  const second = await app.inject({ method: 'GET', url: `/stremio/${cappedToken}/play/movie/tt0111161/${hashA}` })
+  const second = await app.inject({ method: 'GET', url: `/stremio/${cappedToken}/play/movie/tt0903747/${hashA}` })
   assert.equal(first.statusCode, 302)
   assert.equal(second.statusCode, 429)
   assert.equal(db.countStremioPlaysToday(capped.id), 1)
@@ -341,21 +342,38 @@ test('an unrestricted account still plays with the gate in place', async () => {
 // was the whole burst, which on a leaked token is the containment mechanism
 // gone: N concurrent requests bought N debrid resolutions.
 
-test('20 concurrent plays against a cap of 1 yield exactly one 302', async () => {
+test('20 concurrent plays of different files against a cap of 1 yield exactly one 302', async () => {
   const burst = db.createUser('burst', 'pw', 'user', 'unrestricted')
   db.setStremioEnabled(burst.id, true)
   db.setStremioPlayCap(burst.id, 1)
   const burstToken = db.mintStremioToken(burst.id)
   const app = await buildApp()
 
-  const results = await Promise.all(Array.from({ length: 20 }, () =>
-    app.inject({ method: 'GET', url: `/stremio/${burstToken}/play/movie/tt0111161/${hashA}` })))
+  // Distinct files, which is the abuse shape: a leaked token firing N plays. A
+  // burst of the same file is one viewing and is covered by the test below.
+  const results = await Promise.all(Array.from({ length: 20 }, (_, i) =>
+    app.inject({ method: 'GET', url: `/stremio/${burstToken}/play/movie/tt0111161/${i.toString(16).padStart(40, '0')}` })))
 
   const redirects = results.filter(res => res.statusCode === 302)
   const refusals = results.filter(res => res.statusCode === 429)
   assert.equal(redirects.length, 1, `expected exactly one 302, got ${redirects.length}`)
   assert.equal(refusals.length, 19)
   assert.equal(db.countStremioPlaysToday(burst.id), 1)
+  await app.close()
+})
+
+test('20 concurrent requests for the SAME file all succeed on one slot', async () => {
+  const seeker = db.createUser('seeker', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(seeker.id, true)
+  db.setStremioPlayCap(seeker.id, 1)
+  const seekerToken = db.mintStremioToken(seeker.id)
+  const app = await buildApp()
+
+  const results = await Promise.all(Array.from({ length: 20 }, () =>
+    app.inject({ method: 'GET', url: `/stremio/${seekerToken}/play/movie/tt0111161/${hashA}` })))
+
+  assert.equal(results.filter(res => res.statusCode === 302).length, 20, 'range requests and seeks must not be refused')
+  assert.equal(db.countStremioPlaysToday(seeker.id), 1)
   await app.close()
 })
 
@@ -516,4 +534,82 @@ test('the redactor covers a prefixed path and leaves unrelated URLs alone', () =
   // A prefixed URL with no mount path given must not be silently passed through
   // as if it held nothing sensitive.
   assert.equal(redactStremioToken(`/addon/stremio/${raw}/manifest.json`), `/addon/stremio/${raw}/manifest.json`)
+})
+
+// ── Final wave, commit 1: a slot is a title, not an HTTP request ─────────────
+//
+// Cache-Control: no-store on the 302 exists so a client cannot pin an expiring
+// CDN URL, which means an obedient client re-enters the play route on every range
+// request, seek and reconnect. Reserving a fresh row per GET turned that into
+// "Daily play limit reached" mid-film, arriving as a dead stream rather than a
+// readable notice.
+
+async function countingApp(overrides: Record<string, unknown> = {}) {
+  const cacheKeys: string[] = []
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(stremioAddonRoutes, {
+    fetchStreams: async () => [{ name: 'A', infoHash: hashA }, { name: 'B', infoHash: hashB }],
+    resolvePlayback: async (_streams: never, _label: string, cacheKey: string) => {
+      cacheKeys.push(cacheKey)
+      return { url: 'https://cdn.torbox.test/file.mkv' }
+    },
+    fetchMeta: async () => null,
+    ...overrides,
+  } as never)
+  return { app, cacheKeys }
+}
+
+function playbackUser(name: string, cap = 30) {
+  const user = db.createUser(name, 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(user.id, true)
+  db.setStremioPlayCap(user.id, cap)
+  return { user, token: db.mintStremioToken(user.id) }
+}
+
+test('five identical play requests cost one slot and reuse one cache key', async () => {
+  const { user, token: tok } = playbackUser('rewatcher')
+  const { app, cacheKeys } = await countingApp()
+  const statuses: number[] = []
+  for (let i = 0; i < 5; i++) {
+    statuses.push((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })).statusCode)
+  }
+  assert.deepEqual(statuses, [302, 302, 302, 302, 302])
+  assert.equal(db.countStremioPlaysToday(user.id), 1, 'five GETs of one file must be one play')
+  // The dedup of the resolution itself lives in src/index.ts's wrapper, which
+  // feeds this cacheKey to getOrCreatePlaybackResolution. What the plugin owes it
+  // is a key that is stable across repeats, which is what this pins.
+  assert.equal(cacheKeys.length, 5)
+  assert.equal(new Set(cacheKeys).size, 1, `expected one stable cache key, got ${JSON.stringify([...new Set(cacheKeys)])}`)
+  assert.equal(cacheKeys[0], '/stremio/play/movie/tt0111161')
+  await app.close()
+})
+
+test('two different titles are two slots', async () => {
+  const { user, token: tok } = playbackUser('two-titles')
+  const { app } = await countingApp()
+  await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })
+  await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0903747/${hashA}` })
+  assert.equal(db.countStremioPlaysToday(user.id), 2)
+  await app.close()
+})
+
+test('a different infohash for the same title is a second slot, being a different file', async () => {
+  const { user, token: tok } = playbackUser('two-files')
+  const { app } = await countingApp()
+  await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })
+  await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashB}` })
+  assert.equal(db.countStremioPlaysToday(user.id), 2)
+  await app.close()
+})
+
+test('a repeat still costs a slot once the cap is full of other titles', async () => {
+  const { user, token: tok } = playbackUser('boundary', 2)
+  const { app } = await countingApp()
+  assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })).statusCode, 302)
+  assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0903747/${hashA}` })).statusCode, 302)
+  // Third distinct title is refused, but re-watching either of the first two is not.
+  assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt1375666/${hashA}` })).statusCode, 429)
+  assert.equal((await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })).statusCode, 302)
+  assert.equal(db.countStremioPlaysToday(user.id), 2)
+  await app.close()
 })
