@@ -17,6 +17,7 @@ import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
   resolveStream as tbResolveStream,
   rehydrateTorBoxCleanupJobs,
+  retainAddonPlayback as retainTorBoxAddonPlayback,
   touchDownloadUrl as touchTorBoxDownloadUrl,
   trackDirectTorBoxUrl,
   torBoxRequestdlTorrentId,
@@ -1998,7 +1999,17 @@ await app.register(stremioAddonRoutes, {
     'stremio',
     config.streamRankingMode === 'provider',
   ),
-  resolvePlayback: (streams, label, cacheKey) => resolvePlayableStream(streams, label, cacheKey, undefined, true),
+  resolvePlayback: async (streams, label, cacheKey) => {
+    const resolved = await resolvePlayableStream(streams, label, cacheKey, undefined, true)
+    // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
+    // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back
+    // while the client reports progress. A Stremio client cannot do that: it
+    // follows the 302 once and streams the CDN URL directly, so no further
+    // request reaches us and the torrent would be deleted mid-viewing. Give it a
+    // window that does not need extending instead.
+    retainTorBoxAddonPlayback(resolved)
+    return resolved
+  },
   fetchMeta: (mediaType, imdbId) => fetchStremioMeta(mediaType, imdbId),
 })
 
