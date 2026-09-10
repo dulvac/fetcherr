@@ -278,3 +278,52 @@ test('the breaker does not block a lone account, because of the two-account floo
     assert.equal(enabled(names[0]), false)
   } finally { restore() }
 })
+
+// ── Fix round 1, commit 3: multi-valued RDNs, and one proof-of-life line ─────
+
+test('a multi-valued RDN yields just the cn value', () => {
+  // Splitting on unescaped commas only left 'alice+uid=1', a usable name that
+  // matches nothing, which pushes toward revocation rather than away from it.
+  assert.equal(usernameFromMemberDn('cn=alice+uid=1,ou=users,dc=io'), 'alice')
+  assert.equal(usernameFromMemberDn('cn=alice+uid=1'), 'alice')
+  assert.equal(usernameFromMemberDn('uid=1+cn=alice,ou=users,dc=io'), '')
+  // An escaped plus is part of the value, not a separator.
+  assert.equal(usernameFromMemberDn('cn=a\\+b,ou=users,dc=io'), 'a+b')
+  assert.equal(usernameFromMemberDn('cn=a\\2Bb,ou=users,dc=io'), 'a+b')
+})
+
+test('the first successful sweep logs the member count and the enabled count', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const { log, info, warn } = stubLogger()
+    const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => names })
+    await run()
+    assert.equal(warn.length, 0)
+    assert.equal(info.length, 1, info.join(' | '))
+    assert.match(info[0], /3 member/)
+    assert.match(info[0], /3 enabled/)
+    // Not per pass: the point is proof of life, not hourly noise.
+    await run()
+    await run()
+    assert.equal(info.length, 1, `expected one line ever, got ${info.length}`)
+  } finally { restore() }
+})
+
+test('a failed or blocked pass does not count as the first success', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const { log, info, warn } = stubLogger()
+    const failing = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => { throw new Error('down') } })
+    await failing()
+    assert.equal(info.length, 0, 'a failure is not proof of life')
+
+    const blocked = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => ['nobody-at-all'] })
+    await blocked()
+    assert.equal(info.length, 0, 'a blocked pass is not proof of life either')
+    assert.equal(warn.length, 2)
+
+    const working = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => names })
+    await working()
+    assert.equal(info.length, 1)
+  } finally { restore() }
+})

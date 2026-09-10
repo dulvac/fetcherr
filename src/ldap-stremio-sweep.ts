@@ -57,15 +57,18 @@ function unescapeDnValue(value: string): string {
   return out
 }
 
-// Split off the first RDN, honouring escaped commas so cn=last\, first stays one
-// component.
-function firstRdn(dn: string): string {
+// Split off the first attribute-value pair, honouring escaped separators so
+// cn=last\, first stays one component. Both `,` and `+` end it: a multi-valued
+// RDN like cn=alice+uid=1 otherwise yields 'alice+uid=1', which is a *usable*
+// name that matches nothing, so it would push toward revoking rather than away
+// from it.
+function firstRdnPair(dn: string): string {
   for (let i = 0; i < dn.length; i++) {
     if (dn[i] === '\\') {
       i += 1
       continue
     }
-    if (dn[i] === ',') return dn.slice(0, i)
+    if (dn[i] === ',' || dn[i] === '+') return dn.slice(0, i)
   }
   return dn
 }
@@ -75,7 +78,7 @@ function firstRdn(dn: string): string {
 // component. Anything else, including a uid= form, is not something this
 // deployment issues, so it yields no username rather than a guess.
 export function usernameFromMemberDn(dn: string): string {
-  const rdn = firstRdn(String(dn ?? '').trim())
+  const rdn = firstRdnPair(String(dn ?? '').trim())
   const match = /^cn=/i.exec(rdn)
   if (!match) return ''
   return unescapeDnValue(rdn.slice(match[0].length)).trim()
@@ -114,6 +117,10 @@ export interface StremioSweepResult {
   // Set when the circuit breaker refused a pass that would have revoked every
   // enabled LDAP account at once.
   blocked?: string
+  // What the pass saw, for the one proof-of-life line the runner logs after its
+  // first success.
+  memberCount: number
+  enabledLdapCount: number
 }
 
 // A pass that would disable every enabled LDAP account is refused. That is the
@@ -137,7 +144,7 @@ export async function sweepStremioAccess(
     // An unreadable group revokes nobody. A bind failure, a timeout, a missing
     // entry or a renamed attribute would otherwise revoke every LDAP account at
     // once, which is a self-inflicted outage for the whole household.
-    return { disabled: [], failed: `group lookup failed: ${err instanceof Error ? err.message : String(err)}` }
+    return { disabled: [], memberCount: 0, enabledLdapCount: 0, failed: `group lookup failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 
   const allowed = new Set(
@@ -146,7 +153,10 @@ export async function sweepStremioAccess(
   // Empty is indistinguishable from a search that silently matched nothing, so
   // it is treated as a failure rather than as "the group has no members".
   if (!allowed.size) {
-    return { disabled: [], failed: `group listing produced no usable usernames (${members.length} raw ${members.length === 1 ? 'entry' : 'entries'})` }
+    return {
+      disabled: [], memberCount: 0, enabledLdapCount: 0,
+      failed: `group listing produced no usable usernames (${members.length} raw ${members.length === 1 ? 'entry' : 'entries'})`,
+    }
   }
 
   // Nothing is written until the whole population has been examined, so the
@@ -162,7 +172,7 @@ export async function sweepStremioAccess(
 
   if (toDisable.length === enabledLdap.length && enabledLdap.length >= MASS_REVOCATION_FLOOR) {
     return {
-      disabled: [],
+      disabled: [], memberCount: allowed.size, enabledLdapCount: enabledLdap.length,
       blocked: `refusing to revoke every enabled LDAP account at once: ${allowed.size} member${allowed.size === 1 ? '' : 's'} listed in ${LDAP_GROUP_DN} matched none of the ${enabledLdap.length} enabled accounts`,
     }
   }
@@ -172,7 +182,7 @@ export async function sweepStremioAccess(
     setStremioEnabled(user.id, false)
     disabled.push(user.username)
   }
-  return { disabled }
+  return { disabled, memberCount: allowed.size, enabledLdapCount: enabledLdap.length }
 }
 
 // Quiet on a clean pass: an hourly timer that logs every time trains people to
@@ -182,9 +192,14 @@ export function createStremioAccessSweepRunner(
   log: SweepLogger,
   deps: { membersOfMediaUsers: () => Promise<string[]> },
 ): () => Promise<void> {
+  // One line after the first successful pass, never again. With a failed lookup
+  // now audible, this covers the last silent case: a correctly formatted listing
+  // from the wrong group that happens to contain everyone, where nothing is
+  // revoked and nothing looks wrong. It does not reinstate hourly noise.
+  let loggedFirstSuccess = false
   return async () => {
     try {
-      const { disabled, failed, blocked } = await sweepStremioAccess(deps)
+      const { disabled, failed, blocked, memberCount, enabledLdapCount } = await sweepStremioAccess(deps)
       if (failed) {
         log.warn(`stremio: LDAP access sweep failed, nothing changed: ${failed}`)
         return
@@ -192,6 +207,10 @@ export function createStremioAccessSweepRunner(
       if (blocked) {
         log.warn(`stremio: LDAP access sweep ${blocked}. Nothing changed; check LDAP_GROUP_DN and the group's member DNs.`)
         return
+      }
+      if (!loggedFirstSuccess) {
+        loggedFirstSuccess = true
+        log.info(`stremio: LDAP access sweep working, ${memberCount} member${memberCount === 1 ? '' : 's'} listed and ${enabledLdapCount} enabled LDAP account${enabledLdapCount === 1 ? '' : 's'}`)
       }
       if (disabled.length) {
         log.warn(`stremio: revoked access for ${disabled.join(', ')} (no longer in ${LDAP_GROUP_DN})`)
