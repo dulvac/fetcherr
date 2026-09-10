@@ -24,6 +24,7 @@ import type { Movie, Show, Season, Episode } from '../db.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
+import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
 import {
   canUserAccessStremioMeta,
   pruneStremioRatingCache,
@@ -31,9 +32,6 @@ import {
   stremioMetaTmdbId,
   stremioMetaTvdbId,
   stremioOfficialRating,
-  trimCacheMap,
-  STREMIO_CACHE_MAX_ITEMS,
-  STREMIO_SEARCH_CACHE_TTL_MS,
 } from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
 
@@ -258,7 +256,7 @@ function stremioSearchMetaIds(meta: StremioMeta, mediaType: StremioMediaType): {
   pruneStremioCaches()
   const itemId = createHash('md5').update(`stremio:item:${mediaType}:${meta.id}`).digest('hex')
   const sourceId = createHash('md5').update(`stremio:source:${mediaType}:${meta.id}`).digest('hex')
-  const cached = { meta, mediaType, itemId, sourceId, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS }
+  const cached = { meta, mediaType, itemId, sourceId, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS }
   stremioSearchCache.set(itemId, cached)
   stremioSearchCache.set(sourceId, cached)
   trimStremioSearchCache()
@@ -294,7 +292,7 @@ function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: Stre
     stremioSearchCache.delete(cached.sourceId)
     return null
   }
-  const refreshed = { ...cached, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS }
+  const refreshed = { ...cached, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS }
   stremioSearchCache.set(cached.itemId, refreshed)
   stremioSearchCache.set(cached.sourceId, refreshed)
   return { meta: cached.meta, mediaType: cached.mediaType, itemId: cached.itemId, sourceId: cached.sourceId, requestedId: id }
@@ -304,7 +302,7 @@ function stremioSeasonToId(series: StremioMeta, seasonNumber: number): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-season:${series.id}:${seasonNumber}`).digest('hex')
   const id = `${STREMIO_SEASON_ID_PREFIX}${hash.slice(-12)}`
-  stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS })
   trimCacheMap(stremioSeasonCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }
@@ -325,7 +323,7 @@ function stremioEpisodeToId(series: StremioMeta, episode: StremioMeta): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-episode:${series.id}:${episode.id || episode.season}:${episode.episode || episode.number}`).digest('hex')
   const id = `${STREMIO_EPISODE_ID_PREFIX}${hash.slice(-12)}`
-  stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS })
   trimCacheMap(stremioEpisodeCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }

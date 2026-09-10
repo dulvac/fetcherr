@@ -123,6 +123,10 @@ export function noticeStreams(message: string, origin: string): Record<string, u
 }
 
 export function orderByPinnedHash(streams: Stream[], infoHash: string): Stream[] {
+  // Same defensive guard parseStremioStreamId has, so the two functions stop
+  // disagreeing: a non-string pin used to throw from .toLowerCase() where before
+  // it returned the ranked order.
+  if (typeof infoHash !== 'string') return streams
   // Hex infohashes are case-insensitive and extractHashFromStream lowercases
   // what it returns, so normalize the pin here rather than trusting every
   // caller to. Comparing raw made a differently-cased pin match nothing and
@@ -225,8 +229,10 @@ async function ratingRefusesMeta(user: AppUser, parsed: ParsedStremioId, opts: S
 
 export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddonRouteOptions) {
   // Derived from the plugin's own mount path rather than assumed: fastify exposes
-  // the encapsulated prefix here, and it is '' when registered without one.
-  const mountPath = app.prefix ?? ''
+  // the encapsulated prefix here, and it is '' when registered without one. A
+  // trailing slash is stripped, because prefix: '/addon/' would make the anchor
+  // '/addon//stremio/', which matches nothing, and the full token would be logged.
+  const mountPath = (app.prefix ?? '').replace(/\/+$/, '')
 
   // Scoped to this plugin, so it covers the addon routes and nothing else.
   app.addHook('onResponse', async (req, reply) => {

@@ -1,11 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Fastify from 'fastify'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-routes-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-routes-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 // No network from these tests. The rating gate resolves through TMDB and TVDB,
 // and without keys both return early, which is also the production behaviour
 // for a rating that cannot be established. Set before the dynamic imports
@@ -657,4 +659,10 @@ test('an admin at the 200 cap is refused', async () => {
   const repeat = await app.inject({ method: 'GET', url: `/stremio/${bossToken}/play/movie/tt0111161/${'0'.repeat(40)}` })
   assert.equal(repeat.statusCode, 302)
   await app.close()
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })

@@ -1,3 +1,4 @@
+import { STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS, trimCacheMap } from './cache-utils.js'
 import { canUserAccessKnownRating, hasRatingLimit, type AppUser } from './db.js'
 import { fetchMovieOfficialRatingByIds, fetchShowOfficialRatingByIds } from './tmdb.js'
 import type { StremioMediaType, StremioMeta } from './sootio.js'
@@ -6,18 +7,7 @@ import type { StremioMediaType, StremioMeta } from './sootio.js'
 // Stremio addon endpoint enforce it, so it lives here rather than private to
 // one of them: a parental control that exists twice drifts into two versions.
 
-export const STREMIO_SEARCH_CACHE_TTL_MS = 15 * 60 * 1000
-export const STREMIO_CACHE_MAX_ITEMS = 1_000
-
 const stremioRatingCache = new Map<string, { rating: string; expiresAt: number }>()
-
-export function trimCacheMap<K, V>(cache: Map<K, V>, maxItems: number): void {
-  while (cache.size > maxItems) {
-    const firstKey = cache.keys().next().value as K | undefined
-    if (firstKey === undefined) return
-    cache.delete(firstKey)
-  }
-}
 
 export function pruneStremioRatingCache(now = Date.now()): void {
   for (const [key, entry] of stremioRatingCache) {
@@ -34,7 +24,7 @@ export function pruneStremioRatingCache(now = Date.now()): void {
 export function primeStremioRating(meta: StremioMeta, mediaType: StremioMediaType, rating: string): void {
   stremioRatingCache.set(stremioRatingCacheKey(meta, mediaType), {
     rating,
-    expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS,
+    expiresAt: Date.now() + STREMIO_CACHE_TTL_MS,
   })
 }
 
@@ -71,7 +61,7 @@ export async function stremioOfficialRating(meta: StremioMeta, mediaType: Stremi
   const rating = mediaType === 'movie'
     ? await fetchMovieOfficialRatingByIds({ tmdbId, imdbId })
     : await fetchShowOfficialRatingByIds({ tmdbId, imdbId, tvdbId: stremioMetaTvdbId(meta) })
-  stremioRatingCache.set(key, { rating, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  stremioRatingCache.set(key, { rating, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS })
   trimCacheMap(stremioRatingCache, STREMIO_CACHE_MAX_ITEMS)
   return rating
 }

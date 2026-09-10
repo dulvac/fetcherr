@@ -1,10 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-retention-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-retention-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 const db = await import('../src/db.js')
 const torbox = await import('../src/torbox.js')
 
@@ -79,4 +81,10 @@ test('an admin who set cleanup to keep is not overridden', () => {
   } finally {
     db.setSetting('torBoxCleanupMode', '')
   }
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })

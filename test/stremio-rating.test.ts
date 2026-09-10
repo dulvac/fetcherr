@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -15,7 +16,8 @@ import type { AppUser } from '../src/db.js'
 // rating that cannot be established.
 process.env.TMDB_API_KEY = ''
 process.env.TVDB_API_KEY = ''
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-rating-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-rating-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 
 const { canUserAccessStremioMeta, primeStremioRating, stremioOfficialRating } = await import('../src/stremio-rating.js')
 
@@ -133,4 +135,10 @@ test('an admin is never rating-limited, whatever maxRating says', async () => {
   const boss = { ...base, role: 'admin' as const, maxRating: 'G' }
   primeStremioRating(movieMeta, 'movie', 'NC-17')
   assert.equal(await canUserAccessStremioMeta(boss, movieMeta, 'movie'), true)
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })

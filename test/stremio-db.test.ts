@@ -1,10 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-stremio-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-stremio-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 const db = await import('../src/db.js')
 
 const user = db.createUser('friend', 'pw', 'user', 'unrestricted')
@@ -146,4 +148,10 @@ test('a cap of zero refuses every reservation', () => {
   const u = db.createUser('zero-cap', 'pw', 'user', 'unrestricted')
   assert.equal(db.reserveStremioPlay(play(u.id, { cap: 0 })), null)
   assert.equal(db.countStremioPlaysToday(u.id), 0)
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })

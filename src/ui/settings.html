@@ -1220,12 +1220,12 @@
               </td>
               <td data-label="Stremio Access">
                 <label class="inline-check ${user.isNew || user.deleted ? 'disabled' : ''}">
-                  <input type="checkbox" aria-label="Stremio Access" title="Applies immediately, without saving" ${user.stremioEnabled ? 'checked' : ''} ${user.isNew || user.deleted ? 'disabled' : ''} onchange="setStremioAccess('${user.id}', this.checked)">
+                  <input type="checkbox" aria-label="Stremio Access" title="Applies immediately, without saving" ${user.stremioEnabled ? 'checked' : ''} ${user.isNew || user.deleted ? 'disabled' : ''} onchange="reportStremioFailure(setStremioAccess('${user.id}', this.checked))">
                 </label>
                 <div class="user-actions">
-                  <button type="button" class="btn btn-sm" ${user.isNew || user.deleted || !user.installUrl ? 'disabled' : ''} onclick="copyStremioInstallUrl('${user.id}')">Copy install URL</button>
-                  <button type="button" class="btn btn-sm" ${user.isNew || user.deleted ? 'disabled' : ''} onclick="rotateStremioInstallUrl('${user.id}')">${user.installUrl ? 'Rotate' : 'Create URL'}</button>
-                  <button type="button" class="btn btn-sm btn-danger" ${user.isNew || user.deleted || !(user.installUrl || user.stremioEnabled) ? 'disabled' : ''} onclick="revokeStremioAccess('${user.id}')">Revoke</button>
+                  <button type="button" class="btn btn-sm" ${user.isNew || user.deleted || !user.installUrl ? 'disabled' : ''} onclick="reportStremioFailure(copyStremioInstallUrl('${user.id}'))">Copy install URL</button>
+                  <button type="button" class="btn btn-sm" ${user.isNew || user.deleted ? 'disabled' : ''} onclick="reportStremioFailure(rotateStremioInstallUrl('${user.id}'))">${user.installUrl ? 'Rotate' : 'Create URL'}</button>
+                  <button type="button" class="btn btn-sm btn-danger" ${user.isNew || user.deleted || !(user.installUrl || user.stremioEnabled) ? 'disabled' : ''} onclick="reportStremioFailure(revokeStremioAccess('${user.id}'))">Revoke</button>
                 </div>
                 <div class="user-id-cell">${escapeHtml(stremioAccessState(user))}</div>
               </td>
@@ -1294,6 +1294,14 @@
   // the DOM, never logged, and never put in a link: the copy handler reads it
   // from managedUsers, which already holds it from the settings payload.
 
+  // The onclick handlers are fire-and-forget, so an unexpected rejection would
+  // otherwise be an unhandled promise the admin never sees.
+  function reportStremioFailure(promise) {
+    return Promise.resolve(promise).catch(err => {
+      showOut(`Stremio action failed: ${err && err.message ? err.message : err}`, 'error')
+    })
+  }
+
   function stremioAccessState(user) {
     if (user.isNew) return 'Save the account first'
     if (user.deleted) return 'Pending delete'
@@ -1323,12 +1331,22 @@
     renderUsers()
   }
 
+  // Rotating twice in quick succession would mint twice and leave the admin
+  // holding the URL from the first response, which the second already killed. One
+  // action per account at a time.
+  const stremioActionsInFlight = new Set()
+
   async function runStremioAction(id, action, done) {
     const user = managedUsers.find(u => u.id === id)
     if (!user || user.isNew || user.deleted) {
       renderUsers()
       return
     }
+    if (stremioActionsInFlight.has(id)) {
+      showOut(`Still working on ${user.username}. Wait for that to finish.`, '')
+      return
+    }
+    stremioActionsInFlight.add(id)
     try {
       applyStremioResult(user, await postStremioAction(id, action))
       showOut(done(user), 'success')
@@ -1337,15 +1355,17 @@
       // the admin clicked towards.
       renderUsers()
       showOut(`Stremio access for ${user.username}: ${err.message}`, 'error')
+    } finally {
+      stremioActionsInFlight.delete(id)
     }
   }
 
   function setStremioAccess(id, enabled) {
-    runStremioAction(id, enabled ? 'enable' : 'disable', user => user.stremioEnabled
+    void reportStremioFailure(runStremioAction(id, enabled ? 'enable' : 'disable', user => user.stremioEnabled
       ? (user.installUrl
         ? `Stremio access is on for ${user.username}.`
         : `Stremio access is on for ${user.username}, but there is no install URL yet. Use Create URL.`)
-      : `Stremio access is off for ${user.username}.`)
+      : `Stremio access is off for ${user.username}.`))
   }
 
   function rotateStremioInstallUrl(id) {
@@ -1357,16 +1377,16 @@
     // Rotating breaks whatever that person already installed, so ask first. There
     // is nothing to break when no URL exists yet, which is the Create URL case.
     if (hadUrl && !confirm(`Rotate the Stremio install URL for ${user.username}? Whatever they installed will stop working and they will need the new URL.`)) return
-    runStremioAction(id, hadUrl ? 'rotate' : 'mint', fresh => hadUrl
+    void reportStremioFailure(runStremioAction(id, hadUrl ? 'rotate' : 'mint', fresh => hadUrl
       ? `New Stremio install URL for ${fresh.username}. Copy it and send it to them; the old one no longer works.`
-      : `Stremio install URL created for ${fresh.username}. Copy it and send it to them.`)
+      : `Stremio install URL created for ${fresh.username}. Copy it and send it to them.`))
   }
 
   function revokeStremioAccess(id) {
     const user = managedUsers.find(u => u.id === id)
     if (!user || user.isNew || user.deleted) return
     if (!confirm(`Revoke Stremio access for ${user.username}? The install URL stops working immediately.`)) return
-    runStremioAction(id, 'clear', fresh => `Stremio access revoked for ${fresh.username}.`)
+    void reportStremioFailure(runStremioAction(id, 'clear', fresh => `Stremio access revoked for ${fresh.username}.`))
   }
 
   // navigator.clipboard needs a secure context, which the LAN address over plain
@@ -1379,19 +1399,20 @@
         return 'clipboard'
       } catch (err) { /* fall through to the legacy path */ }
     }
+    const area = document.createElement('textarea')
     try {
-      const area = document.createElement('textarea')
       area.value = text
       area.setAttribute('readonly', '')
       area.style.position = 'fixed'
       area.style.top = '-1000px'
       document.body.appendChild(area)
       area.select()
-      const copied = document.execCommand('copy')
-      // Removed straight away: this is the only moment the credential is in the DOM.
-      area.remove()
-      if (copied) return 'clipboard'
-    } catch (err) { /* fall through to the prompt */ }
+      if (document.execCommand('copy')) return 'clipboard'
+    } catch (err) { /* fall through to the prompt */ } finally {
+      // In a finally because this is the only moment the credential sits in the
+      // DOM, and a throw between appendChild and remove would leave it there.
+      try { area.remove() } catch (err) { /* already gone */ }
+    }
     prompt('Copy this Stremio install URL:', text)
     return 'prompt'
   }
@@ -1404,10 +1425,14 @@
       return
     }
     const how = await copyStremioText(user.installUrl)
+    // Name the host: the URL's origin comes from the request, so an admin browsing
+    // on localhost copies a localhost URL that will not work for anyone else.
+    let host = ''
+    try { host = new URL(user.installUrl).host } catch (err) { host = 'this server' }
     if (how === 'clipboard') {
-      showOut(`Stremio install URL for ${user.username} copied. Treat it as a password: it is the only credential the addon needs.`, 'success')
+      showOut(`Stremio install URL for ${user.username} copied, pointing at ${host}. Treat it as a password: it is the only credential the addon needs.`, 'success')
     } else {
-      showOut(`Copy the Stremio install URL for ${user.username} from the dialog. The clipboard needs an HTTPS page.`, '')
+      showOut(`Copy the Stremio install URL for ${user.username} from the dialog, pointing at ${host}. The clipboard needs an HTTPS page.`, '')
     }
   }
 

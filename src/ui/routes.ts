@@ -1107,6 +1107,8 @@ export async function uiRoutes(app: FastifyInstance) {
 
     const fresh = getUserById(user.id)!
     const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
+    // The body carries a credential, so nothing may cache it.
+    reply.header('Cache-Control', 'no-store')
     return {
       stremioEnabled: fresh.stremioEnabled,
       stremioPlayCap: fresh.stremioPlayCap,

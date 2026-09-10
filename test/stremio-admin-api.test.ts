@@ -1,11 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Fastify from 'fastify'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-admin-api-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-admin-api-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 // No network: the settings payload touches nothing remote, but config reads keys
 // once at load and an unset key is what keeps the rating lookups offline.
 process.env.TMDB_API_KEY = ''
@@ -105,13 +107,15 @@ test('a cap of zero is accepted, since it means no plays', async () => {
 })
 
 // setStremioPlayCap silently substitutes 30 for a bad value, so a typo would
-// quietly reset a friend's cap to the default. The route rejects instead.
+// quietly reset a friend's cap to the default. The route rejects instead. The type
+// guard covers non-finite values too: NaN and Infinity are not integers, and both
+// JSON-serialize to null, which the null case below already stands for.
 test('an invalid cap is refused and leaves the stored cap unchanged', async () => {
   const app = await buildApp()
   const capped = db.createUser('cap-victim', 'pw', 'user', 'unrestricted')
   await post(app, capped.id, { action: 'enable', cap: 5 })
 
-  for (const cap of [-1, 1001, 7.5, Number.NaN, Number.POSITIVE_INFINITY, '7', null, {}]) {
+  for (const cap of [-1, 1001, 7.5, '7', null, {}]) {
     const res = await post(app, capped.id, { action: 'enable', cap })
     assert.equal(res.statusCode, 400, `cap ${JSON.stringify(cap)} should be refused`)
     assert.match(res.json().error, /cap/i)
@@ -167,6 +171,34 @@ test('a non-admin session is refused and changes nothing', async () => {
   await app.close()
 })
 
+// The sharper half: refusing to mint for a bare account proves little, since there
+// was nothing to take. A non-admin must also be unable to break or steal access
+// that already exists.
+test('a non-admin cannot clear or rotate an account that already has a token', async () => {
+  const app = await buildApp()
+  const victim = db.createUser('has-access', 'pw', 'user', 'unrestricted')
+  const minted = await post(app, victim.id, { action: 'mint' })
+  const token = tokenFromUrl(minted.json().installUrl)
+
+  for (const action of ['clear', 'rotate', 'disable', 'enable']) {
+    const res = await post(app, victim.id, { action, cap: 1 }, userHeaders)
+    assert.equal(res.statusCode, 403, `${action} must be refused`)
+    assert.equal(db.getUserById(victim.id)!.stremioToken, token, `${action} must not change the token`)
+    assert.equal(db.getUserById(victim.id)!.stremioEnabled, true, `${action} must not change access`)
+    assert.equal(db.getUserById(victim.id)!.stremioPlayCap, 30, `${action} must not change the cap`)
+  }
+  // The token still resolves, so nothing was quietly rotated underneath.
+  assert.equal(db.getUserByStremioToken(token)?.id, victim.id)
+  await app.close()
+})
+
+test('the credential-bearing response is not cacheable', async () => {
+  const app = await buildApp()
+  const res = await post(app, friend.id, { action: 'mint' })
+  assert.equal(res.headers['cache-control'], 'no-store')
+  await app.close()
+})
+
 test('no session at all is refused', async () => {
   const app = await buildApp()
   const target = db.createUser('no-session', 'pw', 'user', 'unrestricted')
@@ -205,4 +237,10 @@ test('an account with no token lists an empty install URL', async () => {
   assert.equal(entry.installUrl, '')
   assert.equal(entry.stremioEnabled, false)
   await app.close()
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })

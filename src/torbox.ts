@@ -550,8 +550,11 @@ export function retainDownloadUrl(downloadUrl: string, retainForMs: number): voi
 // non-TorBox resolution is ignored, an untracked URL is ignored, and a throw is
 // swallowed. torBoxCleanupMode stays the admin's to set: when they have turned
 // cleanup off there is no tracked entry to extend in the first place.
-export function retainAddonPlayback(resolved: { url: string; provider?: string }): void {
-  if (resolved.provider !== 'TorBox') return
+export function retainAddonPlayback(resolved: { url?: string; provider?: string } | null | undefined): void {
+  // url first: a nullish resolution must not turn a controlled 404 into a
+  // TypeError on the way out.
+  if (!resolved?.url) return
+  if (resolved?.provider !== 'TorBox') return
   try {
     retainDownloadUrl(resolved.url, ADDON_PLAYBACK_RETENTION_MS)
   } catch (err) {
