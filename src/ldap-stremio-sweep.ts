@@ -105,17 +105,27 @@ export async function listMediaUsersFromLdap(): Promise<string[]> {
   }
 }
 
+export interface StremioSweepResult {
+  disabled: string[]
+  // Set when the listing could not be trusted, so nothing was written. The
+  // runner logs this: without it a failure is a silent hourly no-op while the
+  // household keeps streaming after being removed from the group.
+  failed?: string
+}
+
+type SweepLogger = { info: (message: string) => void; warn: (message: string) => void }
+
 export async function sweepStremioAccess(
   deps: { membersOfMediaUsers: () => Promise<string[]> },
-): Promise<{ disabled: string[] }> {
+): Promise<StremioSweepResult> {
   let members: string[]
   try {
     members = await deps.membersOfMediaUsers()
-  } catch {
+  } catch (err) {
     // An unreadable group revokes nobody. A bind failure, a timeout, a missing
     // entry or a renamed attribute would otherwise revoke every LDAP account at
     // once, which is a self-inflicted outage for the whole household.
-    return { disabled: [] }
+    return { disabled: [], failed: `group lookup failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 
   const allowed = new Set(
@@ -123,7 +133,9 @@ export async function sweepStremioAccess(
   )
   // Empty is indistinguishable from a search that silently matched nothing, so
   // it is treated as a failure rather than as "the group has no members".
-  if (!allowed.size) return { disabled: [] }
+  if (!allowed.size) {
+    return { disabled: [], failed: `group listing produced no usable usernames (${members.length} raw ${members.length === 1 ? 'entry' : 'entries'})` }
+  }
 
   const disabled: string[] = []
   for (const user of listUsers()) {
@@ -140,6 +152,31 @@ export async function sweepStremioAccess(
   return { disabled }
 }
 
+// Quiet on a clean pass: an hourly timer that logs every time trains people to
+// ignore it. Only a revocation or a failed lookup says anything. Exported so the
+// logging itself is testable without an LDAP server.
+export function createStremioAccessSweepRunner(
+  log: SweepLogger,
+  deps: { membersOfMediaUsers: () => Promise<string[]> },
+): () => Promise<void> {
+  return async () => {
+    try {
+      const { disabled, failed } = await sweepStremioAccess(deps)
+      if (failed) {
+        log.warn(`stremio: LDAP access sweep failed, nothing changed: ${failed}`)
+        return
+      }
+      if (disabled.length) {
+        log.warn(`stremio: revoked access for ${disabled.join(', ')} (no longer in ${LDAP_GROUP_DN})`)
+      }
+    } catch (err) {
+      // sweepStremioAccess reports rather than throws, so this is only for a
+      // defect in the sweep itself. Still logged, never silent.
+      log.warn(`stremio: LDAP access sweep errored, nothing changed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+}
+
 export function startStremioAccessSweep(app: FastifyInstance): void {
   if (!stremioSweepConfigured()) {
     const missing = [
@@ -152,18 +189,7 @@ export function startStremioAccessSweep(app: FastifyInstance): void {
     return
   }
 
-  // Quiet on a clean pass: an hourly timer that logs every time trains people to
-  // ignore it. Only a revocation or a failed lookup says anything.
-  const run = async () => {
-    try {
-      const { disabled } = await sweepStremioAccess({ membersOfMediaUsers: listMediaUsersFromLdap })
-      if (disabled.length) {
-        app.log.warn(`stremio: revoked access for ${disabled.join(', ')} (no longer in ${LDAP_GROUP_DN})`)
-      }
-    } catch (err) {
-      app.log.warn(`stremio: LDAP access sweep failed, nothing changed: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
+  const run = createStremioAccessSweepRunner(app.log, { membersOfMediaUsers: listMediaUsersFromLdap })
 
   app.log.info(`stremio: LDAP access sweep on, hourly against ${LDAP_GROUP_DN}`)
   void run()
