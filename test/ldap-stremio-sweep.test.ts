@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 
 process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-ldap-sweep-${randomUUID()}.db`)
 const db = await import('../src/db.js')
-const { sweepStremioAccess, stremioSweepConfigured, usernameFromMemberDn } = await import('../src/ldap-stremio-sweep.js')
+const { createStremioAccessSweepRunner, sweepStremioAccess, stremioSweepConfigured, usernameFromMemberDn } = await import('../src/ldap-stremio-sweep.js')
 
 function ldapUser(username: string) {
   const user = db.createUser(username, 'pw', 'user', 'unrestricted', undefined, 'ldap')
@@ -22,6 +22,8 @@ db.setStremioEnabled(localUser.id, true)
 const alreadyOff = db.createUser('alreadyoff', 'pw', 'user', 'unrestricted', undefined, 'ldap')
 
 const enabled = (username: string) => db.getUserByUsername(username)!.stremioEnabled
+const allEnabledLdapUsernames = () =>
+  db.listUsers().filter(user => user.authSource === 'ldap' && user.stremioEnabled).map(user => user.username)
 const everyone = ['ingroup', 'MixedCase']
 
 // Inert unless configured: no LDAP_BIND_DN, LDAP_BIND_PASSWORD or LDAP_GROUP_DN is
@@ -126,4 +128,65 @@ test('an escaped comma does not split the DN early', async () => {
   })
   assert.deepEqual(result.disabled, [])
   assert.equal(enabled('last, first'), true)
+})
+
+// ── Fix round 1, commit 1: a lookup failure must be audible ─────────────────
+//
+// sweepStremioAccess swallowed the throw and returned no disabled accounts, so
+// the runner's catch never fired and disabled.length was zero: nothing was
+// logged. Wrong bind credentials, a renamed group, a firewall change or an
+// expired service account all produced an hourly silent no-op while the
+// household kept streaming after being removed from media-users.
+
+function stubLogger() {
+  const info: string[] = []
+  const warn: string[] = []
+  return { log: { info: (m: string) => info.push(m), warn: (m: string) => warn.push(m) }, info, warn }
+}
+
+test('a throwing lookup reports a reason and still writes nothing', async () => {
+  const before = enabled('ingroup')
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => { throw new Error('ldap down') } })
+  assert.deepEqual(result.disabled, [])
+  assert.ok(result.failed, 'the result must carry a failure reason')
+  assert.match(result.failed!, /ldap down/)
+  assert.equal(enabled('ingroup'), before)
+})
+
+test('an empty listing reports a reason too, since it is treated as a failure', async () => {
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => [] })
+  assert.deepEqual(result.disabled, [])
+  assert.ok(result.failed, 'an empty listing is a failure and must say so')
+})
+
+test('the runner emits exactly one warning for a failed lookup', async () => {
+  const { log, info, warn } = stubLogger()
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => { throw new Error('ECONNREFUSED 127.0.0.1:1') } })
+  await run()
+  assert.equal(warn.length, 1, `expected one warning, got ${warn.length}: ${warn.join(' | ')}`)
+  assert.match(warn[0], /ECONNREFUSED/)
+  assert.match(warn[0], /nothing changed/i)
+  assert.equal(info.length, 0)
+})
+
+test('the runner says nothing on a clean pass', async () => {
+  const { log, warn } = stubLogger()
+  // Derived from the database rather than a constant, so an account added by an
+  // earlier test cannot make a "clean" pass revoke something.
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => allEnabledLdapUsernames() })
+  await run()
+  await run()
+  assert.deepEqual(warn, [])
+})
+
+test('the runner warns once, naming the accounts, when it revokes', async () => {
+  const victim = db.createUser('revokeme', 'pw', 'user', 'unrestricted', undefined, 'ldap')
+  db.setStremioEnabled(victim.id, true)
+  const keep = allEnabledLdapUsernames().filter(name => name !== 'revokeme')
+  const { log, warn } = stubLogger()
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => keep })
+  await run()
+  assert.equal(warn.length, 1, warn.join(' | '))
+  assert.match(warn[0], /revokeme/)
+  assert.equal(enabled('revokeme'), false)
 })
