@@ -111,7 +111,19 @@ export interface StremioSweepResult {
   // runner logs this: without it a failure is a silent hourly no-op while the
   // household keeps streaming after being removed from the group.
   failed?: string
+  // Set when the circuit breaker refused a pass that would have revoked every
+  // enabled LDAP account at once.
+  blocked?: string
 }
+
+// A pass that would disable every enabled LDAP account is refused. That is the
+// measured catastrophic pattern: a group of display names, uid=-form member DNs,
+// or simply the wrong group DN, all parse into usable names that match nobody and
+// would take the whole household off the addon at once, from a timer, with no
+// user action to correlate against. "All of them" rather than a tunable fraction,
+// because it needs no threshold to justify. Two is the floor, so revoking a lone
+// account still works.
+const MASS_REVOCATION_FLOOR = 2
 
 type SweepLogger = { info: (message: string) => void; warn: (message: string) => void }
 
@@ -137,15 +149,26 @@ export async function sweepStremioAccess(
     return { disabled: [], failed: `group listing produced no usable usernames (${members.length} raw ${members.length === 1 ? 'entry' : 'entries'})` }
   }
 
-  const disabled: string[] = []
-  for (const user of listUsers()) {
+  // Nothing is written until the whole population has been examined, so the
+  // breaker below can refuse the pass without having to undo anything.
+  const enabledLdap = listUsers().filter(user =>
     // Local accounts are never touched, whatever the group says.
-    if (user.authSource !== 'ldap') continue
+    user.authSource === 'ldap'
     // Only ever disables: an admin may have deliberately revoked someone who is
     // still in the group, and re-granting is a human action. Skipping accounts
     // that are already off also keeps them out of the revoked list.
-    if (!user.stremioEnabled) continue
-    if (allowed.has(user.username.toLowerCase())) continue
+    && user.stremioEnabled)
+  const toDisable = enabledLdap.filter(user => !allowed.has(user.username.toLowerCase()))
+
+  if (toDisable.length === enabledLdap.length && enabledLdap.length >= MASS_REVOCATION_FLOOR) {
+    return {
+      disabled: [],
+      blocked: `refusing to revoke every enabled LDAP account at once: ${allowed.size} member${allowed.size === 1 ? '' : 's'} listed in ${LDAP_GROUP_DN} matched none of the ${enabledLdap.length} enabled accounts`,
+    }
+  }
+
+  const disabled: string[] = []
+  for (const user of toDisable) {
     setStremioEnabled(user.id, false)
     disabled.push(user.username)
   }
@@ -161,9 +184,13 @@ export function createStremioAccessSweepRunner(
 ): () => Promise<void> {
   return async () => {
     try {
-      const { disabled, failed } = await sweepStremioAccess(deps)
+      const { disabled, failed, blocked } = await sweepStremioAccess(deps)
       if (failed) {
         log.warn(`stremio: LDAP access sweep failed, nothing changed: ${failed}`)
+        return
+      }
+      if (blocked) {
+        log.warn(`stremio: LDAP access sweep ${blocked}. Nothing changed; check LDAP_GROUP_DN and the group's member DNs.`)
         return
       }
       if (disabled.length) {
