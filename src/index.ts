@@ -5,12 +5,13 @@ import { collectStreamProviderUrls, config, isListPresentationEnabled, normalize
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
+import { stremioAddonRoutes } from './stremio-addon.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
 import { syncAllDiscoverCategories, removeAllDiscoverSourceItems } from './discover.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchStremioMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
@@ -1983,6 +1984,23 @@ await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, regi
 await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(uiRoutes)
+// No prefix, on purpose: the plugin's token redaction is anchored on the literal
+// ^/stremio/, so mounting this under a fastify prefix would silently stop
+// redacting and write account tokens into the logs. One surface, one prefix, so
+// there is also no /emby-style alias registration here.
+await app.register(stremioAddonRoutes, {
+  fetchStreams: (mediaType, externalId) => fetchRankedStremioStreams(
+    mediaType,
+    externalId,
+    undefined,
+    config.preferredAudioLanguage,
+    '',
+    'stremio',
+    config.streamRankingMode === 'provider',
+  ),
+  resolvePlayback: (streams, label, cacheKey) => resolvePlayableStream(streams, label, cacheKey, undefined, true),
+  fetchMeta: (mediaType, imdbId) => fetchStremioMeta(mediaType, imdbId),
+})
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
 
