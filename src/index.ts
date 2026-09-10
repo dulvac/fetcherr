@@ -1999,6 +1999,10 @@ await app.register(stremioAddonRoutes, {
     config.streamRankingMode === 'provider',
   ),
   resolvePlayback: async (streams, label, cacheKey) => {
+    // The plugin's cacheKey namespace (/stremio/play/...) is deliberately separate
+    // from the Jellyfin Stremio path's (/play/stremio/...). The two surfaces build
+    // different candidate sets, so a shared failed-play cache entry would let one
+    // surface's dead end suppress the other's working stream. Do not unify them.
     const resolved = await resolvePlayableStream(streams, label, cacheKey, undefined, true)
     // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
     // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back

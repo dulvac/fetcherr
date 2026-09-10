@@ -27,8 +27,17 @@ const offToken = db.mintStremioToken(off.id)
 
 let resolvedWith: { streams: unknown[]; label: string } | null = null
 
+// The router options src/index.ts:38-43 builds. Without them the tests measure a
+// configuration that is not deployed: ignoreTrailingSlash alone turns a
+// trailing-slash manifest from a catch-all 404 in a bare instance into a real 200
+// in the server.
+const PRODUCTION_ROUTER_OPTIONS = {
+  routerOptions: { ignoreTrailingSlash: true },
+  rewriteUrl: (req: { url?: string }) => req.url!.replace(/\/\/+/g, '/').replace(/\.view(\?|$)/, '$1'),
+}
+
 async function buildApp(overrides: Record<string, unknown> = {}) {
-  const app = Fastify()
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
   await app.register(stremioAddonRoutes, {
     fetchStreams: async () => [{ name: 'A', infoHash: hashA }, { name: 'B', infoHash: hashB }],
     resolvePlayback: async (streams: never, label: string) => {
@@ -209,7 +218,7 @@ test('a pin that no longer resolves is logged, not served silently', async () =>
 
 test('no log line carries the raw token', async () => {
   const lines: string[] = []
-  const app = Fastify({ logger: { level: 'trace', stream: { write: (line: string) => { lines.push(line) } } } })
+  const app = Fastify({ ...PRODUCTION_ROUTER_OPTIONS, logger: { level: 'trace', stream: { write: (line: string) => { lines.push(line) } } } } as never)
   await app.register(stremioAddonRoutes, {
     fetchStreams: async () => [{ name: 'A', infoHash: hashA }],
     resolvePlayback: async () => ({ url: 'https://cdn.torbox.test/file.mkv', filename: 'a.mkv' }),
@@ -243,7 +252,6 @@ test('unmatched paths under the prefix answer like an invalid token', async () =
   for (const url of [
     `/stremio/${token}/configure`,
     `/stremio/${token}/meta/movie/tt0111161.json`,
-    `/stremio/${token}/manifest.json/`,
   ]) {
     const res = await app.inject({ method: 'GET', url })
     assert.equal(res.statusCode, 404)
@@ -252,6 +260,20 @@ test('unmatched paths under the prefix answer like an invalid token', async () =
   const wrongMethod = await app.inject({ method: 'POST', url: `/stremio/${token}/manifest.json` })
   assert.equal(wrongMethod.statusCode, 404)
   assert.deepEqual(wrongMethod.json(), invalid.json())
+  await app.close()
+})
+
+// Production sets ignoreTrailingSlash, so this is the real route rather than the
+// catch-all: same token check, same silencing, same redaction. Pinned because a
+// bare Fastify instance answers 404 here and the difference is easy to mistake
+// for a bug in either direction.
+test('a trailing slash reaches the manifest route, as it does in the server', async () => {
+  const app = await buildApp()
+  const res = await app.inject({ method: 'GET', url: `/stremio/${token}/manifest.json/` })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json().resources, ['stream'])
+  const bad = await app.inject({ method: 'GET', url: '/stremio/nonsense/manifest.json/' })
+  assert.equal(bad.statusCode, 404)
   await app.close()
 })
 
@@ -448,7 +470,7 @@ test('the manifest and stream responses allow cross-origin reads, for Stremio We
 
 test('under a fastify prefix the routes answer and the token is still redacted', async () => {
   const lines: string[] = []
-  const app = Fastify({ logger: { level: 'trace', stream: { write: (line: string) => { lines.push(line) } } } })
+  const app = Fastify({ ...PRODUCTION_ROUTER_OPTIONS, logger: { level: 'trace', stream: { write: (line: string) => { lines.push(line) } } } } as never)
   await app.register(stremioAddonRoutes, {
     prefix: '/addon',
     fetchStreams: async () => [{ name: 'A', infoHash: hashA }],
@@ -468,12 +490,14 @@ test('under a fastify prefix the routes answer and the token is still redacted',
   for (const url of [
     `/addon/stremio/${token}/configure`,
     `/addon/stremio/${token}/meta/movie/tt0111161.json`,
-    `/addon/stremio/${token}/manifest.json/`,
   ]) {
     const res = await app.inject({ method: 'GET', url })
     assert.equal(res.statusCode, 404)
     assert.deepEqual(res.json(), { error: 'Not found' })
   }
+  // And the trailing-slash manifest, which ignoreTrailingSlash routes to the real
+  // handler under the prefix as well.
+  assert.equal((await app.inject({ method: 'GET', url: `/addon/stremio/${token}/manifest.json/` })).statusCode, 200)
   await app.close()
 
   const logged = lines.join('')
