@@ -1985,10 +1985,9 @@ await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, regi
 await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(uiRoutes)
-// No prefix, on purpose: the plugin's token redaction is anchored on the literal
-// ^/stremio/, so mounting this under a fastify prefix would silently stop
-// redacting and write account tokens into the logs. One surface, one prefix, so
-// there is also no /emby-style alias registration here.
+// One surface, one prefix: no /emby-style alias registration for the addon. The
+// plugin derives its own route paths and its token redaction from app.prefix, so
+// mounting it elsewhere would stay correct, but there is no reason to.
 await app.register(stremioAddonRoutes, {
   fetchStreams: (mediaType, externalId) => fetchRankedStremioStreams(
     mediaType,

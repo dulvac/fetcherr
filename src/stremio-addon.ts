@@ -168,8 +168,21 @@ function tokenHint(token: string): string {
   return token ? `${token.slice(0, 6)}~` : 'none'
 }
 
-export function redactStremioToken(url: string): string {
-  return url.replace(/(^\/stremio\/)([^/?#]+)/, (_match, prefix: string, token: string) => `${prefix}${tokenHint(token)}`)
+// The one source of truth for where these routes live. Route registration and the
+// redactor both derive from it, so they cannot disagree: anchoring the redactor
+// on a hardcoded '/stremio/' was only correct because the plugin happened to be
+// mounted without a prefix, and adding one later would have written tokens into
+// the logs with nothing failing.
+const STREMIO_ROUTE_PREFIX = '/stremio'
+
+export function redactStremioToken(url: string, mountPath = ''): string {
+  const anchor = `${mountPath}${STREMIO_ROUTE_PREFIX}/`
+  if (!url.startsWith(anchor)) return url
+  const rest = url.slice(anchor.length)
+  const boundary = rest.search(/[/?#]/)
+  const token = boundary === -1 ? rest : rest.slice(0, boundary)
+  const tail = boundary === -1 ? '' : rest.slice(boundary)
+  return `${anchor}${tokenHint(token)}${tail}`
 }
 
 // Applied to all three routes. Fastify emits its own request line before any
@@ -205,9 +218,13 @@ async function ratingRefusesMeta(user: AppUser, parsed: ParsedStremioId, opts: S
 }
 
 export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddonRouteOptions) {
+  // Derived from the plugin's own mount path rather than assumed: fastify exposes
+  // the encapsulated prefix here, and it is '' when registered without one.
+  const mountPath = app.prefix ?? ''
+
   // Scoped to this plugin, so it covers the addon routes and nothing else.
   app.addHook('onResponse', async (req, reply) => {
-    app.log.info(`stremio: ${req.method} ${redactStremioToken(req.url)} -> ${reply.statusCode} in ${Math.round(reply.elapsedTime)}ms`)
+    app.log.info(`stremio: ${req.method} ${redactStremioToken(req.url, mountPath)} -> ${reply.statusCode} in ${Math.round(reply.elapsedTime)}ms`)
   })
 
   // Anything under the prefix that matches no route below is answered here, not
@@ -217,15 +234,15 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
   // a manifest cached from another configuration, and a trailing slash is one
   // typo away. Fastify prefers the specific routes over this wildcard, so it
   // shadows nothing. Same body as an invalid token.
-  app.all('/stremio/*', SILENCE_DEFAULT_REQUEST_LOG, async (_req, reply) => reply.code(404).send(NOT_FOUND))
+  app.all(`${STREMIO_ROUTE_PREFIX}/*`, SILENCE_DEFAULT_REQUEST_LOG, async (_req, reply) => reply.code(404).send(NOT_FOUND))
 
-  app.get('/stremio/:token/manifest.json', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/manifest.json`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
     const { token } = req.params as { token: string }
     if (!userForToken(token)) return reply.code(404).send(NOT_FOUND)
     return reply.headers(ADDON_HEADERS).send(buildManifest())
   })
 
-  app.get('/stremio/:token/stream/:mediaType/:id', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/stream/:mediaType/:id`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
     const { token, mediaType, id } = req.params as { token: string; mediaType: string; id: string }
     const user = userForToken(token)
     if (!user) return reply.code(404).send(NOT_FOUND)
@@ -266,7 +283,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
   // before GET would spend a cap slot and a debrid resolution for nothing,
   // quietly halving the account's quota. An unmatched HEAD falls to the
   // catch-all above.
-  app.get('/stremio/:token/play/:mediaType/:externalId/:infoHash', { ...SILENCE_DEFAULT_REQUEST_LOG, exposeHeadRoute: false }, async (req, reply) => {
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/play/:mediaType/:externalId/:infoHash`, { ...SILENCE_DEFAULT_REQUEST_LOG, exposeHeadRoute: false }, async (req, reply) => {
     const { token, mediaType, externalId, infoHash } = req.params as Record<string, string>
     const user = userForToken(token)
     if (!user) return reply.code(404).send(NOT_FOUND)

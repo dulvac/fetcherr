@@ -13,7 +13,7 @@ process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-routes-${randomUUID()}.db`)
 process.env.TMDB_API_KEY = ''
 process.env.TVDB_API_KEY = ''
 const db = await import('../src/db.js')
-const { stremioAddonRoutes } = await import('../src/stremio-addon.js')
+const { stremioAddonRoutes, redactStremioToken } = await import('../src/stremio-addon.js')
 
 const hashA = 'a'.repeat(40)
 const hashB = 'b'.repeat(40)
@@ -435,4 +435,61 @@ test('the manifest and stream responses allow cross-origin reads, for Stremio We
   assert.equal(stream.headers['access-control-allow-origin'], '*')
   assert.equal(notice.headers['access-control-allow-origin'], '*')
   await app.close()
+})
+
+// ── Fix round 1, commit 2: redaction must not depend on the mount path ───────
+//
+// The redactor used to be anchored on the literal ^/stremio/, so it was correct
+// only because src/index.ts happens to register the plugin without a prefix. A
+// later refactor that added one would have written account tokens into the logs
+// with nothing failing. This is the test that makes that class of mistake
+// impossible, so it asserts both halves: the routes work under a prefix, and
+// nothing logs the token there either.
+
+test('under a fastify prefix the routes answer and the token is still redacted', async () => {
+  const lines: string[] = []
+  const app = Fastify({ logger: { level: 'trace', stream: { write: (line: string) => { lines.push(line) } } } })
+  await app.register(stremioAddonRoutes, {
+    prefix: '/addon',
+    fetchStreams: async () => [{ name: 'A', infoHash: hashA }],
+    resolvePlayback: async () => ({ url: 'https://cdn.torbox.test/file.mkv', filename: 'a.mkv' }),
+    fetchMeta: async () => null,
+  } as never)
+
+  const manifest = await app.inject({ method: 'GET', url: `/addon/stremio/${token}/manifest.json` })
+  const stream = await app.inject({ method: 'GET', url: `/addon/stremio/${token}/stream/movie/tt0111161.json` })
+  const play = await app.inject({ method: 'GET', url: `/addon/stremio/${token}/play/movie/tt0111161/${hashA}` })
+  assert.equal(manifest.statusCode, 200, 'the manifest must answer under the prefix')
+  assert.deepEqual(manifest.json().resources, ['stream'])
+  assert.equal(stream.statusCode, 200)
+  assert.equal(play.statusCode, 302)
+
+  // Unmatched paths under the prefixed mount too.
+  for (const url of [
+    `/addon/stremio/${token}/configure`,
+    `/addon/stremio/${token}/meta/movie/tt0111161.json`,
+    `/addon/stremio/${token}/manifest.json/`,
+  ]) {
+    const res = await app.inject({ method: 'GET', url })
+    assert.equal(res.statusCode, 404)
+    assert.deepEqual(res.json(), { error: 'Not found' })
+  }
+  await app.close()
+
+  const logged = lines.join('')
+  assert.ok(lines.length > 0, 'expected the logger to have produced output')
+  assert.ok(!logged.includes(token), `the raw token leaked under a prefix: ${logged}`)
+  assert.ok(logged.includes('/addon/stremio/'), 'the redacted line should still show the mount path')
+})
+
+test('the redactor covers a prefixed path and leaves unrelated URLs alone', () => {
+  const raw = 'A'.repeat(43)
+  assert.equal(redactStremioToken(`/stremio/${raw}/manifest.json`), '/stremio/AAAAAA~/manifest.json')
+  assert.equal(redactStremioToken(`/addon/stremio/${raw}/manifest.json`, '/addon'), '/addon/stremio/AAAAAA~/manifest.json')
+  assert.equal(redactStremioToken(`/addon/stremio/${raw}/play/movie/tt0111161/${hashA}`, '/addon'), `/addon/stremio/AAAAAA~/play/movie/tt0111161/${hashA}`)
+  assert.equal(redactStremioToken(`/stremio/${raw}?x=1`), '/stremio/AAAAAA~?x=1')
+  assert.equal(redactStremioToken('/ui/settings'), '/ui/settings')
+  // A prefixed URL with no mount path given must not be silently passed through
+  // as if it held nothing sensitive.
+  assert.equal(redactStremioToken(`/addon/stremio/${raw}/manifest.json`), `/addon/stremio/${raw}/manifest.json`)
 })
