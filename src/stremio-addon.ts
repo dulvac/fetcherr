@@ -1,5 +1,11 @@
+import type { FastifyInstance } from 'fastify'
 import { config } from './config.js'
-import { extractHashFromStream, type Stream, type StremioMediaType } from './sootio.js'
+import {
+  countStremioPlaysToday, getUserByStremioToken, hasRatingLimit, recordStremioPlay, type AppUser,
+} from './db.js'
+import { buildPlaybackOrigin } from './play-auth.js'
+import { extractHashFromStream, type Stream, type StremioMediaType, type StremioMeta } from './sootio.js'
+import { canUserAccessStremioMeta } from './stremio-rating.js'
 
 export const ADDON_VERSION = '1.0.0'
 export const ADDON_ID = 'io.fetcherr.streams'
@@ -128,4 +134,151 @@ export function orderByPinnedHash(streams: Stream[], infoHash: string): Stream[]
   const pinned = streams.filter(stream => extractHashFromStream(stream) === wanted)
   const rest = streams.filter(stream => extractHashFromStream(stream) !== wanted)
   return [...pinned, ...rest]
+}
+
+// ── Routes ───────────────────────────────────────────────────────────────────
+//
+// Everything below sits under /stremio/, and nothing else may be registered
+// here. /stremio/* is the one prefix on the streaming host that is exempt from
+// the network's IP allowlist, because Stremio clients cannot perform the
+// interactive sign-in every other path requires. The token in the URL is the
+// only credential these routes get, so treat each one as internet-facing.
+
+// Lowercase only, on purpose: no /i flag. The path segment is lowercased before
+// it is matched, so an uppercase hash is canonicalized rather than refused,
+// and anything that is not 40 hex characters never reaches a provider.
+const INFO_HASH = /^[0-9a-f]{40}$/
+const NOT_FOUND = { error: 'Not found' }
+
+export interface StremioAddonRouteOptions {
+  fetchStreams: (mediaType: StremioMediaType, externalId: string) => Promise<Stream[]>
+  resolvePlayback: (streams: Stream[], label: string, cacheKey: string) => Promise<{ url: string; filename?: string }>
+  fetchMeta: (mediaType: StremioMediaType, imdbId: string) => Promise<StremioMeta | null>
+}
+
+// The token is a path segment, so fastify's own request logging and every
+// reverse-proxy access log would capture it verbatim. Keep enough to correlate
+// two requests from the same client, never enough to replay one.
+function tokenHint(token: string): string {
+  return token ? `${token.slice(0, 6)}~` : 'none'
+}
+
+export function redactStremioToken(url: string): string {
+  return url.replace(/(^\/stremio\/)([^/?#]+)/, (_match, prefix: string, token: string) => `${prefix}${tokenHint(token)}`)
+}
+
+// Applied to all three routes. Fastify emits its own request line before any
+// handler or onRequest hook runs, so redacting inside a handler would be too
+// late: 'silent' suppresses the route's automatic request and response logging
+// entirely, and the onResponse hook below puts back one line with the token
+// segment already reduced to a hint.
+const SILENCE_DEFAULT_REQUEST_LOG = { logLevel: 'silent' as const }
+
+function userForToken(token: string): AppUser | null {
+  const user = getUserByStremioToken(token)
+  // A token that was never issued and a token whose account has been switched
+  // off must be indistinguishable: same status, same body, no hint which it was.
+  if (!user || !user.stremioEnabled) return null
+  return user
+}
+
+function playCapFor(user: AppUser): number {
+  return user.role === 'admin' ? Infinity : user.stremioPlayCap
+}
+
+export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddonRouteOptions) {
+  // Scoped to this plugin, so it covers the addon routes and nothing else.
+  app.addHook('onResponse', async (req, reply) => {
+    app.log.info(`stremio: ${req.method} ${redactStremioToken(req.url)} -> ${reply.statusCode} in ${Math.round(reply.elapsedTime)}ms`)
+  })
+
+  app.get('/stremio/:token/manifest.json', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+    const { token } = req.params as { token: string }
+    if (!userForToken(token)) return reply.code(404).send(NOT_FOUND)
+    return reply.header('Cache-Control', 'no-store').send(buildManifest())
+  })
+
+  app.get('/stremio/:token/stream/:mediaType/:id', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+    const { token, mediaType, id } = req.params as { token: string; mediaType: string; id: string }
+    const user = userForToken(token)
+    if (!user) return reply.code(404).send(NOT_FOUND)
+
+    const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
+    // Every failure below returns one non-playable entry rather than an empty
+    // list, because an empty list renders as "nothing exists" and tells the
+    // viewer nothing about why.
+    const notice = (message: string) => reply.header('Cache-Control', 'no-store').send({ streams: noticeStreams(message, origin) })
+
+    const parsed = parseStremioStreamId(mediaType, id)
+    if (!parsed) return notice('This title is not supported by Fetcherr.')
+
+    if (hasRatingLimit(user)) {
+      const meta = await opts.fetchMeta(parsed.mediaType, parsed.imdbId).catch(() => null)
+      const allowed = meta ? await canUserAccessStremioMeta(user, meta, parsed.mediaType).catch(() => false) : false
+      if (!allowed) return notice('Not available for this account.')
+    }
+
+    // Checked here as well as on play so the cap is visible before someone
+    // presses play. Only the play route records, so nothing counted here.
+    if (countStremioPlaysToday(user.id) >= playCapFor(user)) {
+      return notice('Daily play limit reached. Try again tomorrow.')
+    }
+
+    let streams: Stream[] = []
+    try {
+      streams = await opts.fetchStreams(parsed.mediaType, parsed.externalId)
+    } catch (err) {
+      app.log.warn(`stremio: stream lookup failed for ${parsed.externalId} (${user.username}): ${err}`)
+      return notice('No streams available right now.')
+    }
+
+    const mapped = toStremioStreams(streams, { origin, token, mediaType: parsed.mediaType, externalId: parsed.externalId })
+    app.log.info(`stremio: ${mapped.length} of ${streams.length} candidates for ${parsed.externalId} (${user.username})`)
+    if (!mapped.length) return notice('No streams available right now.')
+    return reply.header('Cache-Control', 'no-store').send({ streams: mapped })
+  })
+
+  app.get('/stremio/:token/play/:mediaType/:externalId/:infoHash', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+    const { token, mediaType, externalId, infoHash } = req.params as Record<string, string>
+    const user = userForToken(token)
+    if (!user) return reply.code(404).send(NOT_FOUND)
+    const wanted = infoHash.toLowerCase()
+    if (!INFO_HASH.test(wanted)) return reply.code(404).send(NOT_FOUND)
+
+    const parsed = parseStremioStreamId(mediaType, `${externalId}.json`)
+    if (!parsed) return reply.code(404).send(NOT_FOUND)
+
+    if (countStremioPlaysToday(user.id) >= playCapFor(user)) {
+      app.log.warn(`stremio: play cap reached for ${user.username}`)
+      return reply.code(429).send({ error: 'Daily play limit reached' })
+    }
+
+    const label = `stremio ${parsed.mediaType} ${parsed.externalId} (${user.username})`
+    try {
+      const streams = await opts.fetchStreams(parsed.mediaType, parsed.externalId)
+      const ordered = orderByPinnedHash(streams, wanted)
+      if (!ordered.length) return reply.code(404).send({ error: 'No streams found' })
+      // Falling through to the next candidate is deliberate: Stremio caches
+      // stream lists for a long time and re-resolution legitimately drops
+      // candidates. But it must not be silent, or someone gets a different
+      // release with no trace of why, so name both hashes.
+      const playing = extractHashFromStream(ordered[0])
+      if (playing !== wanted) {
+        app.log.warn(`stremio: pinned ${wanted} is gone, playing ${playing ?? 'unknown'} instead for ${label}`)
+      }
+      const resolved = await opts.resolvePlayback(ordered, label, `/stremio/play/${parsed.mediaType}/${parsed.externalId}`)
+      recordStremioPlay({
+        userId: user.id,
+        mediaType: parsed.mediaType,
+        externalId: parsed.externalId,
+        infoHash: wanted,
+        title: resolved.filename ?? '',
+      })
+      app.log.info(`stremio: play ${label} hash=${wanted} file=${resolved.filename ?? '?'}`)
+      return reply.redirect(resolved.url, 302)
+    } catch (err) {
+      app.log.warn(`stremio: no playable stream for ${label}: ${err}`)
+      return reply.code(404).send({ error: 'No stream available' })
+    }
+  })
 }
