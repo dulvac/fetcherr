@@ -14,7 +14,7 @@ import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
 import { syncAllDiscoverCategories, removeAllDiscoverSourceItems } from './discover.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchStremioMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchCinemetaMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
@@ -2024,7 +2024,11 @@ await app.register(stremioAddonRoutes, {
     retainTorBoxAddonPlayback(resolved)
     return resolved
   },
-  fetchMeta: (mediaType, imdbId) => fetchStremioMeta(mediaType, imdbId),
+  // Cinemeta explicitly, not fetchStremioMeta: that one follows
+  // stremioSearchSource, and setting it to 'addon' would point the parental gate's
+  // metadata lookup at stream providers that serve no metas, failing the gate
+  // closed for every rating-limited account.
+  fetchMeta: (mediaType, imdbId) => fetchCinemetaMeta(mediaType, imdbId),
 })
 
 // An install URL is a bearer credential checked against our own row, so removing
