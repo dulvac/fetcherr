@@ -150,6 +150,10 @@ export function orderByPinnedHash(streams: Stream[], infoHash: string): Stream[]
 // and anything that is not 40 hex characters never reaches a provider.
 const INFO_HASH = /^[0-9a-f]{40}$/
 const NOT_FOUND = { error: 'Not found' }
+// Stremio Web fetches the manifest and the stream list with XHR and refuses to
+// install an addon without this. Native clients do not care, but "any Stremio
+// client" is the point of the feature.
+const ADDON_HEADERS = { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
 
 export interface StremioAddonRouteOptions {
   fetchStreams: (mediaType: StremioMediaType, externalId: string) => Promise<Stream[]>
@@ -218,7 +222,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
   app.get('/stremio/:token/manifest.json', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
     const { token } = req.params as { token: string }
     if (!userForToken(token)) return reply.code(404).send(NOT_FOUND)
-    return reply.header('Cache-Control', 'no-store').send(buildManifest())
+    return reply.headers(ADDON_HEADERS).send(buildManifest())
   })
 
   app.get('/stremio/:token/stream/:mediaType/:id', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
@@ -230,7 +234,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     // Every failure below returns one non-playable entry rather than an empty
     // list, because an empty list renders as "nothing exists" and tells the
     // viewer nothing about why.
-    const notice = (message: string) => reply.header('Cache-Control', 'no-store').send({ streams: noticeStreams(message, origin) })
+    const notice = (message: string) => reply.headers(ADDON_HEADERS).send({ streams: noticeStreams(message, origin) })
 
     const parsed = parseStremioStreamId(mediaType, id)
     if (!parsed) return notice('This title is not supported by Fetcherr.')
@@ -254,10 +258,15 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     const mapped = toStremioStreams(streams, { origin, token, mediaType: parsed.mediaType, externalId: parsed.externalId })
     app.log.info(`stremio: ${mapped.length} of ${streams.length} candidates for ${parsed.externalId} (${user.username})`)
     if (!mapped.length) return notice('No streams available right now.')
-    return reply.header('Cache-Control', 'no-store').send({ streams: mapped })
+    return reply.headers(ADDON_HEADERS).send({ streams: mapped })
   })
 
-  app.get('/stremio/:token/play/:mediaType/:externalId/:infoHash', SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+  // exposeHeadRoute false because fastify would otherwise auto-register HEAD
+  // against this handler, and a player or link preview that probes with HEAD
+  // before GET would spend a cap slot and a debrid resolution for nothing,
+  // quietly halving the account's quota. An unmatched HEAD falls to the
+  // catch-all above.
+  app.get('/stremio/:token/play/:mediaType/:externalId/:infoHash', { ...SILENCE_DEFAULT_REQUEST_LOG, exposeHeadRoute: false }, async (req, reply) => {
     const { token, mediaType, externalId, infoHash } = req.params as Record<string, string>
     const user = userForToken(token)
     if (!user) return reply.code(404).send(NOT_FOUND)
@@ -302,6 +311,13 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
         app.log.warn(`stremio: pinned ${wanted} is gone, playing ${playing ?? 'unknown'} instead for ${label}`)
       }
       const resolved = await opts.resolvePlayback(ordered, label, `/stremio/play/${parsed.mediaType}/${parsed.externalId}`)
+      // A resolver that returns nothing usable must not spend the slot or send
+      // the client a redirect to an empty Location.
+      if (!resolved?.url) {
+        if (reservationId !== null) releaseStremioPlay(reservationId)
+        app.log.warn(`stremio: resolver returned no url for ${label}`)
+        return reply.code(404).send({ error: 'No stream available' })
+      }
       if (reservationId !== null) finalizeStremioPlay(reservationId, resolved.filename ?? '')
       // Admins hold no reservation, so their play is still recorded here: the
       // cap does not apply to them but the accounting does.
@@ -313,7 +329,9 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
         title: resolved.filename ?? '',
       })
       app.log.info(`stremio: play ${label} hash=${wanted} file=${resolved.filename ?? '?'}`)
-      return reply.redirect(resolved.url, 302)
+      // The whole design rests on play re-resolving at click time, so nothing
+      // may cache this redirect and pin a CDN URL that expires.
+      return reply.header('Cache-Control', 'no-store').redirect(resolved.url, 302)
     } catch (err) {
       // The slot was never spent, so it must not count against today.
       if (reservationId !== null) releaseStremioPlay(reservationId)

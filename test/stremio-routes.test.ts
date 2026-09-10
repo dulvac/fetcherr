@@ -377,3 +377,62 @@ test('an admin is not held to the cap', async () => {
   assert.equal(db.countStremioPlaysToday(boss.id), 3)
   await app.close()
 })
+
+// ── Fix round 1, commit 4: the cheap minors ─────────────────────────────────
+
+test('a HEAD on the play route burns no cap slot and no resolution', async () => {
+  const prober = db.createUser('prober', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(prober.id, true)
+  db.setStremioPlayCap(prober.id, 1)
+  const proberToken = db.mintStremioToken(prober.id)
+  let resolverCalls = 0
+  const app = Fastify()
+  await app.register(stremioAddonRoutes, {
+    fetchStreams: async () => [{ name: 'A', infoHash: hashA }],
+    resolvePlayback: async () => { resolverCalls++; return { url: 'https://cdn.torbox.test/file.mkv' } },
+    fetchMeta: async () => null,
+  } as never)
+
+  const head = await app.inject({ method: 'HEAD', url: `/stremio/${proberToken}/play/movie/tt0111161/${hashA}` })
+  assert.notEqual(head.statusCode, 302)
+  assert.equal(resolverCalls, 0)
+  assert.equal(db.countStremioPlaysToday(prober.id), 0)
+
+  // The quota the HEAD did not spend is still there for the real request.
+  const get = await app.inject({ method: 'GET', url: `/stremio/${proberToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(get.statusCode, 302)
+  assert.equal(resolverCalls, 1)
+  assert.equal(db.countStremioPlaysToday(prober.id), 1)
+  await app.close()
+})
+
+test('a resolver that returns no url gets a 404, not a redirect to nowhere', async () => {
+  const broken = db.createUser('broken-resolver', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(broken.id, true)
+  const brokenToken = db.mintStremioToken(broken.id)
+  const app = await buildApp({ resolvePlayback: async () => ({}) })
+  const res = await app.inject({ method: 'GET', url: `/stremio/${brokenToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(res.statusCode, 404)
+  assert.equal(res.headers.location, undefined)
+  assert.equal(db.countStremioPlaysToday(broken.id), 0)
+  await app.close()
+})
+
+test('the play redirect is not cacheable, because it re-resolves at click time', async () => {
+  const app = await buildApp()
+  const res = await app.inject({ method: 'GET', url: `/stremio/${token}/play/movie/tt0111161/${hashA}` })
+  assert.equal(res.statusCode, 302)
+  assert.equal(res.headers['cache-control'], 'no-store')
+  await app.close()
+})
+
+test('the manifest and stream responses allow cross-origin reads, for Stremio Web', async () => {
+  const app = await buildApp()
+  const manifest = await app.inject({ method: 'GET', url: `/stremio/${token}/manifest.json` })
+  const stream = await app.inject({ method: 'GET', url: `/stremio/${token}/stream/movie/tt0111161.json` })
+  const notice = await app.inject({ method: 'GET', url: `/stremio/${token}/stream/movie/kitsu:1.json` })
+  assert.equal(manifest.headers['access-control-allow-origin'], '*')
+  assert.equal(stream.headers['access-control-allow-origin'], '*')
+  assert.equal(notice.headers['access-control-allow-origin'], '*')
+  await app.close()
+})
