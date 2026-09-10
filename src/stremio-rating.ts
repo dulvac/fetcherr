@@ -25,6 +25,19 @@ export function pruneStremioRatingCache(now = Date.now()): void {
   }
 }
 
+// The seam the parental gate is tested through. stremioOfficialRating reads this
+// cache before it reaches TMDB or TVDB, so seeding it lets a test drive the gate
+// with a real rating on both media types without a network or an API key. This is
+// the household's only parental control and it has two consumers, so it needs
+// coverage that survives the next edit rather than byte-identity with the version
+// it was moved from.
+export function primeStremioRating(meta: StremioMeta, mediaType: StremioMediaType, rating: string): void {
+  stremioRatingCache.set(stremioRatingCacheKey(meta, mediaType), {
+    rating,
+    expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS,
+  })
+}
+
 export function stremioMetaTmdbId(meta: StremioMeta): number | null {
   if (!meta.id.startsWith('tmdb:')) return null
   const tmdbId = Number.parseInt(meta.id.slice(5), 10)

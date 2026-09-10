@@ -17,7 +17,7 @@ process.env.TMDB_API_KEY = ''
 process.env.TVDB_API_KEY = ''
 process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-rating-${randomUUID()}.db`)
 
-const { canUserAccessStremioMeta } = await import('../src/stremio-rating.js')
+const { canUserAccessStremioMeta, primeStremioRating, stremioOfficialRating } = await import('../src/stremio-rating.js')
 
 const meta = { id: 'tt0111161', name: 'Shawshank', releaseInfo: '1994' } as StremioMeta
 
@@ -72,4 +72,65 @@ test('the addon meta lookup targets Cinemeta even when the search source is addo
     ;(config as { streamProviderUrls: string[] }).streamProviderUrls = previousProviders
     globalThis.fetch = realFetch
   }
+})
+
+// ── Final wave, commit 4: the gate with real ratings, on both media types ────
+//
+// Both original tests were 'movie', and the kids case passed because the rating
+// could not be established without an API key. Nothing exercised
+// canUserAccessKnownRating through the Stremio path with an actual rating, and the
+// series branch through fetchShowOfficialRatingByIds and stremioMetaTvdbId was
+// never entered at all. src/jellyfin/ has no test suite, so this file is the only
+// coverage the household's parental control has.
+
+const limited: AppUser = { ...base, role: 'user', maxRating: 'PG-13' }
+
+const movieMeta = { id: 'tt0110912', name: 'Pulp Fiction' } as StremioMeta
+const seriesMeta = { id: 'tt0903747', name: 'Breaking Bad', tvdb_id: 81189 } as StremioMeta
+
+test('a PG-13-limited account is allowed a PG movie', async () => {
+  const meta = { ...movieMeta, id: 'tt0119174' } as StremioMeta
+  primeStremioRating(meta, 'movie', 'PG')
+  assert.equal(await stremioOfficialRating(meta, 'movie'), 'PG')
+  assert.equal(await canUserAccessStremioMeta(limited, meta, 'movie'), true)
+})
+
+test('a PG-13-limited account is refused an R movie', async () => {
+  primeStremioRating(movieMeta, 'movie', 'R')
+  assert.equal(await stremioOfficialRating(movieMeta, 'movie'), 'R')
+  assert.equal(await canUserAccessStremioMeta(limited, movieMeta, 'movie'), false)
+})
+
+test('a PG-13-limited account is allowed a TV-PG series', async () => {
+  const meta = { ...seriesMeta, id: 'tt0417299' } as StremioMeta
+  primeStremioRating(meta, 'series', 'TV-PG')
+  assert.equal(await stremioOfficialRating(meta, 'series'), 'TV-PG')
+  assert.equal(await canUserAccessStremioMeta(limited, meta, 'series'), true)
+})
+
+test('a PG-13-limited account is refused a TV-MA series', async () => {
+  primeStremioRating(seriesMeta, 'series', 'TV-MA')
+  assert.equal(await stremioOfficialRating(seriesMeta, 'series'), 'TV-MA')
+  assert.equal(await canUserAccessStremioMeta(limited, seriesMeta, 'series'), false)
+})
+
+test('the movie and series ratings of one id do not share a cache entry', async () => {
+  const meta = { id: 'tt0111161', name: 'Ambiguous', tvdb_id: 4242 } as StremioMeta
+  primeStremioRating(meta, 'movie', 'G')
+  primeStremioRating(meta, 'series', 'TV-MA')
+  assert.equal(await canUserAccessStremioMeta(limited, meta, 'movie'), true)
+  assert.equal(await canUserAccessStremioMeta(limited, meta, 'series'), false)
+})
+
+test('an unrestricted account is allowed an R title without a rating lookup', async () => {
+  const adult = { ...base, role: 'user' as const, maxRating: 'unrestricted' }
+  // No rating primed, and no network available: hasRatingLimit short-circuits.
+  assert.equal(await canUserAccessStremioMeta(adult, { id: 'tt0068646' } as StremioMeta, 'movie'), true)
+  assert.equal(await canUserAccessStremioMeta(adult, { id: 'tt0141842' } as StremioMeta, 'series'), true)
+})
+
+test('an admin is never rating-limited, whatever maxRating says', async () => {
+  const boss = { ...base, role: 'admin' as const, maxRating: 'G' }
+  primeStremioRating(movieMeta, 'movie', 'NC-17')
+  assert.equal(await canUserAccessStremioMeta(boss, movieMeta, 'movie'), true)
 })
