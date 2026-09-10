@@ -186,6 +186,19 @@ function playCapFor(user: AppUser): number {
   return user.role === 'admin' ? Infinity : user.stremioPlayCap
 }
 
+// The household's only parental control. Both routes run it, because enforcing
+// it on the stream route alone is cosmetic: the play URL is derivable from the
+// account's own token, which the account holder necessarily has in their
+// Stremio configuration, and orderByPinnedHash's fallback plays the top
+// candidate even for a hash that matches nothing. Fails closed: a meta lookup
+// that errors or returns nothing refuses, never permits.
+async function ratingRefusesMeta(user: AppUser, parsed: ParsedStremioId, opts: StremioAddonRouteOptions): Promise<boolean> {
+  if (!hasRatingLimit(user)) return false
+  const meta = await opts.fetchMeta(parsed.mediaType, parsed.imdbId).catch(() => null)
+  const allowed = meta ? await canUserAccessStremioMeta(user, meta, parsed.mediaType).catch(() => false) : false
+  return !allowed
+}
+
 export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddonRouteOptions) {
   // Scoped to this plugin, so it covers the addon routes and nothing else.
   app.addHook('onResponse', async (req, reply) => {
@@ -212,11 +225,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     const parsed = parseStremioStreamId(mediaType, id)
     if (!parsed) return notice('This title is not supported by Fetcherr.')
 
-    if (hasRatingLimit(user)) {
-      const meta = await opts.fetchMeta(parsed.mediaType, parsed.imdbId).catch(() => null)
-      const allowed = meta ? await canUserAccessStremioMeta(user, meta, parsed.mediaType).catch(() => false) : false
-      if (!allowed) return notice('Not available for this account.')
-    }
+    if (await ratingRefusesMeta(user, parsed, opts)) return notice('Not available for this account.')
 
     // Checked here as well as on play so the cap is visible before someone
     // presses play. Only the play route records, so nothing counted here.
@@ -247,6 +256,13 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
 
     const parsed = parseStremioStreamId(mediaType, `${externalId}.json`)
     if (!parsed) return reply.code(404).send(NOT_FOUND)
+
+    // A notice entry only means something inside a stream list, so a refusal
+    // here is the route's standard not-found response.
+    if (await ratingRefusesMeta(user, parsed, opts)) {
+      app.log.warn(`stremio: rating gate refused play of ${parsed.externalId} for ${user.username}`)
+      return reply.code(404).send(NOT_FOUND)
+    }
 
     if (countStremioPlaysToday(user.id) >= playCapFor(user)) {
       app.log.warn(`stremio: play cap reached for ${user.username}`)

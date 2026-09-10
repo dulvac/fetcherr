@@ -225,3 +225,47 @@ test('no log line carries the raw token', async () => {
   assert.ok(lines.length > 0, 'expected the logger to have produced output')
   assert.ok(!logged.includes(token), `the raw token leaked into the logs: ${logged}`)
 })
+
+// ── Fix round 1, commit 1: the rating gate belongs on play too ───────────────
+//
+// The stream route's refusal is cosmetic if play does not enforce it: the URL
+// is fully derivable from the account's own token, which the account holder
+// necessarily has, and orderByPinnedHash's fallback means even a random hash
+// plays the top candidate.
+
+test('a rating-limited account gets no 302 from play, with a real or a random hash', async () => {
+  const kid = db.createUser('kid-play', 'pw', 'kids', '1')
+  db.setStremioEnabled(kid.id, true)
+  const kidToken = db.mintStremioToken(kid.id)
+  const app = await buildApp()
+
+  const real = await app.inject({ method: 'GET', url: `/stremio/${kidToken}/play/movie/tt0111161/${hashA}` })
+  const random = await app.inject({ method: 'GET', url: `/stremio/${kidToken}/play/movie/tt0111161/${'f'.repeat(40)}` })
+
+  assert.equal(real.statusCode, 404)
+  assert.equal(random.statusCode, 404)
+  assert.equal(db.countStremioPlaysToday(kid.id), 0)
+  await app.close()
+})
+
+test('a rating-limited account is refused when the meta lookup fails, not permitted', async () => {
+  const kid = db.createUser('kid-meta', 'pw', 'kids', '1')
+  db.setStremioEnabled(kid.id, true)
+  const kidToken = db.mintStremioToken(kid.id)
+  const app = await buildApp({ fetchMeta: async () => { throw new Error('tmdb down') } })
+  const res = await app.inject({ method: 'GET', url: `/stremio/${kidToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(res.statusCode, 404)
+  assert.equal(db.countStremioPlaysToday(kid.id), 0)
+  await app.close()
+})
+
+test('an unrestricted account still plays with the gate in place', async () => {
+  const adult = db.createUser('adult-play', 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(adult.id, true)
+  const adultToken = db.mintStremioToken(adult.id)
+  const app = await buildApp()
+  const res = await app.inject({ method: 'GET', url: `/stremio/${adultToken}/play/movie/tt0111161/${hashA}` })
+  assert.equal(res.statusCode, 302)
+  assert.equal(db.countStremioPlaysToday(adult.id), 1)
+  await app.close()
+})
