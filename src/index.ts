@@ -1,21 +1,26 @@
 import Fastify from 'fastify'
 import { parseTorrentTitle, type ParsedResult as ParsedTorrentTitleResult } from '@viren070/parse-torrent-title'
-import { randomBytes } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { collectStreamProviderUrls, config, isListPresentationEnabled, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists, parseTraktListModes, parseStremioSearchSource } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
+import { stremioAddonRoutes } from './stremio-addon.js'
+// Fork-only, and deliberately not imported by the addon module: see the header of
+// src/ldap-stremio-sweep.ts.
+import { startStremioAccessSweep } from './ldap-stremio-sweep.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
 import { syncAllDiscoverCategories, removeAllDiscoverSourceItems } from './discover.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchCinemetaMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
   resolveStream as tbResolveStream,
   rehydrateTorBoxCleanupJobs,
+  retainAddonPlayback as retainTorBoxAddonPlayback,
   touchDownloadUrl as touchTorBoxDownloadUrl,
   trackDirectTorBoxUrl,
   torBoxRequestdlTorrentId,
@@ -216,6 +221,14 @@ const playbackItemPaths = new Map<string, { playPath: string; expiresAt: number 
 const playbackClientNames = new Map<string, { clientName: string; expiresAt: number }>()
 const torBoxPlaybackUrls = new Map<string, { url: string; expiresAt: number }>()
 const playbackCandidates = new Map<string, { stream: Stream; itemId: string; playPath: string; label: string; fileHint?: string; expiresAt: number }>()
+// Providers routinely advertise a scene .rar as a .mkv — only addMagnet+unrestrict
+// reveals the truth, which happens in resolvePlayableStream at actual play time, a
+// different pass than the one that builds the MediaSources list. Without remembering
+// the verdict, the same dead hash gets re-offered (and re-pays the resolve round-trip)
+// on every PlaybackInfo call (issue #38). Keyed by hash+label, not bare hash, so a
+// season pack that yields an archive for one episode doesn't blacklist the rest.
+const KNOWN_ARCHIVE_TTL_MS = 24 * 60 * 60 * 1000
+const knownArchiveCandidates = new Map<string, { filename: string; expiresAt: number }>()
 
 class PlaybackResolutionError extends Error {
   constructor(
@@ -259,6 +272,25 @@ function clearFailedPlay(cacheKey: string) {
   failedPlayCache.delete(cacheKey)
 }
 
+function knownArchiveKey(hash: string, label: string): string {
+  return `${hash.toLowerCase()}::${label}`
+}
+
+function markKnownArchive(hash: string, label: string, filename: string) {
+  knownArchiveCandidates.set(knownArchiveKey(hash, label), { filename, expiresAt: Date.now() + KNOWN_ARCHIVE_TTL_MS })
+}
+
+function isKnownArchive(hash: string | null | undefined, label: string): boolean {
+  if (!hash) return false
+  const entry = knownArchiveCandidates.get(knownArchiveKey(hash, label))
+  if (!entry) return false
+  if (entry.expiresAt <= Date.now()) {
+    knownArchiveCandidates.delete(knownArchiveKey(hash, label))
+    return false
+  }
+  return true
+}
+
 function cleanupPlaybackPrewarmCache() {
   const now = Date.now()
   for (const [key, entry] of playbackPrewarmCache) {
@@ -275,6 +307,9 @@ function cleanupPlaybackPrewarmCache() {
   }
   for (const [key, entry] of playbackCandidates) {
     if (entry.expiresAt <= now) playbackCandidates.delete(key)
+  }
+  for (const [key, entry] of knownArchiveCandidates) {
+    if (entry.expiresAt <= now) knownArchiveCandidates.delete(key)
   }
 }
 
@@ -1090,6 +1125,7 @@ async function resolvePlayableStream(
         if (!resolved) continue
 
         if (!isVideoFile(resolved.filename)) {
+          markKnownArchive(normalizedHash, label, resolved.filename)
           app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
           continue
         }
@@ -1151,9 +1187,29 @@ async function resolvePlayableStream(
   return { url: best.url }
 }
 
+// Deterministic, not random: Infuse re-reads an item's MediaSources constantly
+// (every detail-screen refresh), and buildPlaybackMediaSources rebuilds this
+// list from scratch on every call. A random token meant a chosen source's id
+// changed underneath the client on the very next read, so a non-default
+// selection could never stick (issue #39). Hashing the candidate's own stable
+// identity instead means the same source gets the same id across requests,
+// while genuinely distinct sources still land on distinct ids.
+function playbackCandidateToken(itemId: string, playPath: string, stream: Stream, fileHint?: string): string {
+  return createHash('sha256').update([
+    itemId,
+    playPath,
+    extractHashFromStream(stream) ?? '',
+    stream.url ?? '',
+    stream.name ?? '',
+    stream.description ?? stream.title ?? '',
+    String(stream.behaviorHints?.videoSize ?? ''),
+    fileHint ?? '',
+  ].join('\0')).digest('hex').slice(0, 32)
+}
+
 function rememberPlaybackCandidate(itemId: string, playPath: string, label: string, stream: Stream, fileHint?: string): string {
   cleanupPlaybackPrewarmCache()
-  const token = randomBytes(16).toString('hex')
+  const token = playbackCandidateToken(itemId, playPath, stream, fileHint)
   playbackCandidates.set(token, {
     stream,
     itemId,
@@ -1189,6 +1245,7 @@ function streamOptionName(stream: Stream, fallbackName: string, index: number): 
     compactHdrLabel(parsed, text),
     compactFeatureLabel(parsed, text),
     compactAudioLabel(parsed, text),
+    compactLanguageLabel(parsed),
     compactSizeLabel(stream, parsed),
     compactProviderLabel(stream, index),
   ])
@@ -1331,6 +1388,19 @@ function compactAudioLabel(parsed: ParsedTorrentTitleResult, text: string): stri
   if (/\bflac\b/i.test(combined)) return 'FLAC'
   if (/\baac\b/i.test(combined)) return 'AAC'
   return undefined
+}
+
+// Omits English (the default assumption for most of the catalog) so the
+// common case stays quiet — only surfaces when a source is dubbed/foreign or
+// carries multiple audio tracks, which is the actual disambiguation need
+// (issue #26).
+function compactLanguageLabel(parsed: ParsedTorrentTitleResult): string | undefined {
+  const languages = (parsed.languages ?? []).map(lang => lang.toLowerCase())
+  if (languages.some(lang => lang.includes('multi'))) return 'Multi'
+  if (languages.some(lang => lang.includes('dual'))) return 'Dual'
+  const code = languages.find(lang => lang in LANGUAGE_ISO3 && lang !== 'en')
+  if (!code) return undefined
+  return code === 'zh-tw' ? 'ZH' : code.toUpperCase()
 }
 
 function compactSizeLabel(stream: Stream, parsed?: ParsedTorrentTitleResult): string | undefined {
@@ -1596,7 +1666,11 @@ async function buildPlaybackMediaSources(input: {
 
   try {
     const { streams, label, fileHint } = await playbackStreamsForPath(input.playPath, input.playbackClient, false)
-    const qualityRanked = streams.filter(stream => (stream.url || extractHashFromStream(stream)) && streamEligibleForMediaSourceSelection(stream))
+    const qualityRanked = streams.filter(stream =>
+      (stream.url || extractHashFromStream(stream))
+      && streamEligibleForMediaSourceSelection(stream)
+      && !isKnownArchive(extractHashFromStream(stream), label),
+    )
     const usable = qualityRanked.slice(0, config.mediaSourceLimit)
 
     if (!usable.length) return [fallbackSource]
@@ -1914,6 +1988,53 @@ await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, regi
 await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(uiRoutes)
+// One surface, one prefix: no /emby-style alias registration for the addon. The
+// plugin derives its own route paths and its token redaction from app.prefix, so
+// mounting it elsewhere would stay correct, but there is no reason to.
+await app.register(stremioAddonRoutes, {
+  fetchStreams: (mediaType, externalId) => fetchRankedStremioStreams(
+    mediaType,
+    externalId,
+    undefined,
+    config.preferredAudioLanguage,
+    '',
+    'stremio',
+    config.streamRankingMode === 'provider',
+  ),
+  resolvePlayback: async (streams, label, cacheKey) => {
+    // The plugin's cacheKey namespace (/stremio/play/...) is deliberately separate
+    // from the Jellyfin Stremio path's (/play/stremio/...). The two surfaces build
+    // different candidate sets, so a shared failed-play cache entry would let one
+    // surface's dead end suppress the other's working stream. Do not unify them.
+    //
+    // Through getOrCreatePlaybackResolution like every Jellyfin play route, so a
+    // repeat within its five-minute window costs one debrid resolution. The addon
+    // needs this more than they do: its redirect is no-store, so an obedient
+    // client comes back here on every range request, seek and reconnect.
+    const { promise, reused } = getOrCreatePlaybackResolution(cacheKey, label, () =>
+      resolvePlayableStream(streams, label, cacheKey, undefined, true))
+    if (reused) app.log.info(`stremio: using in-flight resolver for ${label}`)
+    const resolved = await promise
+    // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
+    // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back
+    // while the client reports progress. A Stremio client cannot do that: it
+    // follows the 302 once and streams the CDN URL directly, so no further
+    // request reaches us and the torrent would be deleted mid-viewing. Give it a
+    // window that does not need extending instead.
+    retainTorBoxAddonPlayback(resolved)
+    return resolved
+  },
+  // Cinemeta explicitly, not fetchStremioMeta: that one follows
+  // stremioSearchSource, and setting it to 'addon' would point the parental gate's
+  // metadata lookup at stream providers that serve no metas, failing the gate
+  // closed for every rating-limited account.
+  fetchMeta: (mediaType, imdbId) => fetchCinemetaMeta(mediaType, imdbId),
+})
+
+// An install URL is a bearer credential checked against our own row, so removing
+// someone from media-users in Authentik does not stop them streaming on its own.
+// Inert unless LDAP_BIND_DN, LDAP_BIND_PASSWORD and LDAP_GROUP_DN are all set.
+startStremioAccessSweep(app)
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
 

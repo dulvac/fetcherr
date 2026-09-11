@@ -14,7 +14,9 @@ import {
   setMovieReleaseModePreference,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
   canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, unhideLibraryItem, updateUser,
+  clearStremioToken, mintStremioToken, setStremioEnabled, setStremioPlayCap,
 } from '../db.js'
+import { buildPlaybackOrigin } from '../play-auth.js'
 import { ldapEnabled } from '../ldap-auth.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
@@ -329,6 +331,34 @@ function currentUiUser(req: { headers: Record<string, string | string[] | undefi
   return getSessionUser(token)
 }
 
+// Routes that answer with JSON, so an unauthenticated request must get a status
+// and a body rather than a redirect to an HTML login page. /api/ is in here
+// because the Stremio admin endpoint lives there and the Settings page fetches
+// it: a 302 to login would arrive as HTML in a fetch that expects JSON.
+function isJsonApiRoute(url: string): boolean {
+  return /^\/api\//.test(url)
+    || /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
+}
+
+// The token is a credential, so it is only ever handed out inside the URL an
+// admin pastes into a client, and only from admin-authenticated responses.
+function stremioInstallUrl(stremioToken: string, origin: string): string {
+  return stremioToken ? `${origin}/stremio/${stremioToken}/manifest.json` : ''
+}
+
+// setStremioPlayCap silently substitutes 30 for a negative or non-finite value,
+// so a typo in the UI would quietly reset a friend's cap to the default instead
+// of failing. Validate here and refuse, rather than leaning on that default.
+const STREMIO_PLAY_CAP_MAX = 1000
+
+function stremioCapError(cap: unknown): string | null {
+  if (cap === undefined) return null
+  if (typeof cap !== 'number' || !Number.isInteger(cap)) return 'cap must be a whole number'
+  if (cap < 0) return 'cap must not be negative'
+  if (cap > STREMIO_PLAY_CAP_MAX) return `cap must not exceed ${STREMIO_PLAY_CAP_MAX}`
+  return null
+}
+
 function requireAdmin(
   req: { headers: Record<string, string | string[] | undefined> },
   reply: { code: (n: number) => { send: (v: unknown) => unknown } },
@@ -445,8 +475,7 @@ export async function uiRoutes(app: FastifyInstance) {
     ) return
 
     if (!isUiAuthConfigured()) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
-      if (isApiRoute) {
+      if (isJsonApiRoute(url)) {
         return reply.code(503).send({ error: 'Setup required. Create an admin account first.' })
       }
       return reply.redirect('/ui/setup-admin', 302)
@@ -454,8 +483,7 @@ export async function uiRoutes(app: FastifyInstance) {
 
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token) || !getSessionUser(token)) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
-      if (isApiRoute) {
+      if (isJsonApiRoute(url)) {
         return reply.code(401).send({ error: 'Unauthorized' })
       }
       return reply.redirect(`/ui/login?next=${encodeURIComponent(req.url)}`, 302)
@@ -786,6 +814,11 @@ export async function uiRoutes(app: FastifyInstance) {
         maxRating: user.maxRating,
         searchEnabled: user.searchEnabled,
         authSource: user.authSource,
+        stremioEnabled: user.stremioEnabled,
+        stremioPlayCap: user.stremioPlayCap,
+        // Derived, never the raw token as its own field: the credential appears
+        // only inside the install URL, and this endpoint is admin-only.
+        installUrl: stremioInstallUrl(user.stremioToken, buildPlaybackOrigin(req.headers as Record<string, string | undefined>)),
       })),
     }
   })
@@ -1031,6 +1064,56 @@ export async function uiRoutes(app: FastifyInstance) {
       }
     }
     return { ok: true }
+  })
+
+  // Mint, rotate and revoke a Stremio install URL for one account.
+  app.post('/api/users/:id/stremio', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as { action?: unknown; cap?: unknown }
+
+    // Load-bearing, not a courtesy: mintStremioToken's UPDATE matches no rows
+    // for an unknown id and still returns a token, so without this the caller
+    // would get a live-looking credential that resolves to nobody.
+    const user = getUserById(id)
+    if (!user) return reply.code(404).send({ error: 'User not found' })
+
+    // Validated before any mutation, so a bad cap cannot mint a token first.
+    const capError = stremioCapError(body.cap)
+    if (capError) return reply.code(400).send({ error: capError })
+
+    switch (body.action) {
+      case 'mint':
+      case 'rotate':
+        mintStremioToken(user.id)
+        setStremioEnabled(user.id, true)
+        break
+      case 'clear':
+        // Both halves, so one action fully removes access rather than leaving an
+        // enabled account with no credential or a disabled one holding a live token.
+        clearStremioToken(user.id)
+        setStremioEnabled(user.id, false)
+        break
+      case 'enable':
+        setStremioEnabled(user.id, true)
+        break
+      case 'disable':
+        setStremioEnabled(user.id, false)
+        break
+      default:
+        return reply.code(400).send({ error: 'Unsupported action' })
+    }
+    if (typeof body.cap === 'number') setStremioPlayCap(user.id, body.cap)
+
+    const fresh = getUserById(user.id)!
+    const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
+    // The body carries a credential, so nothing may cache it.
+    reply.header('Cache-Control', 'no-store')
+    return {
+      stremioEnabled: fresh.stremioEnabled,
+      stremioPlayCap: fresh.stremioPlayCap,
+      installUrl: stremioInstallUrl(fresh.stremioToken, origin),
+    }
   })
 
   app.post('/ui/users-data', async (req, reply) => {

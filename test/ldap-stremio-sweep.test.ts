@@ -1,0 +1,337 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+
+const databasePath = join(tmpdir(), `fetcherr-ldap-sweep-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
+const db = await import('../src/db.js')
+const { createStremioAccessSweepRunner, sweepStremioAccess, stremioSweepConfigured, usernameFromMemberDn } = await import('../src/ldap-stremio-sweep.js')
+
+function ldapUser(username: string) {
+  const user = db.createUser(username, 'pw', 'user', 'unrestricted', undefined, 'ldap')
+  db.setStremioEnabled(user.id, true)
+  return user
+}
+
+const ingroup = ldapUser('ingroup')
+const outgroup = ldapUser('outgroup')
+const mixedCase = ldapUser('MixedCase')
+const localUser = db.createUser('localuser', 'pw', 'user', 'unrestricted')
+db.setStremioEnabled(localUser.id, true)
+const alreadyOff = db.createUser('alreadyoff', 'pw', 'user', 'unrestricted', undefined, 'ldap')
+
+const enabled = (username: string) => db.getUserByUsername(username)!.stremioEnabled
+const allEnabledLdapUsernames = () =>
+  db.listUsers().filter(user => user.authSource === 'ldap' && user.stremioEnabled).map(user => user.username)
+const everyone = ['ingroup', 'MixedCase']
+
+// Inert unless configured: no LDAP_BIND_DN, LDAP_BIND_PASSWORD or LDAP_GROUP_DN is
+// set in this process, and nothing about fetcherr changes for anyone who leaves
+// them unset.
+test('the sweep is off unless all three variables are set', () => {
+  assert.equal(stremioSweepConfigured(), false)
+})
+
+test('an LDAP account outside media-users loses Stremio access', async () => {
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => everyone })
+  assert.deepEqual(result.disabled, ['outgroup'])
+  assert.equal(enabled('ingroup'), true)
+  assert.equal(enabled('outgroup'), false)
+})
+
+test('username comparison is case-insensitive, since usernames are COLLATE NOCASE', async () => {
+  // The group lists MixedCase; the row is MixedCase; a lowercase listing must
+  // still match, and vice versa.
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => ['INGROUP', 'mixedcase'] })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('ingroup'), true)
+  assert.equal(enabled('MixedCase'), true)
+})
+
+test('local accounts are never touched by the sweep', async () => {
+  // localuser is not in the group listing and never will be, since the group only
+  // knows about LDAP accounts. It must keep access anyway.
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => everyone })
+  assert.ok(!result.disabled.includes('localuser'))
+  assert.equal(enabled('localuser'), true)
+  // And with a listing that is treated as a failure, still nothing.
+  await sweepStremioAccess({ membersOfMediaUsers: async () => [] })
+  assert.equal(enabled('localuser'), true)
+})
+
+// The single most important behaviour here: a lookup that cannot be trusted must
+// revoke nobody. Revoking everyone at once is a self-inflicted household outage.
+test('a throwing lookup changes nothing', async () => {
+  const before = enabled('ingroup')
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => { throw new Error('ldap down') } })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('ingroup'), before)
+  assert.equal(enabled('MixedCase'), true)
+})
+
+test('an empty member list is treated as a failure, not as nobody', async () => {
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => [] })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('ingroup'), true)
+  assert.equal(enabled('MixedCase'), true)
+  assert.equal(enabled('localuser'), true)
+})
+
+test('a member list of only unusable entries is also treated as a failure', async () => {
+  // What a missing group entry or a wrong attribute name looks like by the time
+  // it reaches the sweep: entries that yield no username at all.
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => ['', '   '] })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('ingroup'), true)
+})
+
+test('an account already disabled stays disabled and is not reported as newly revoked', async () => {
+  assert.equal(enabled('alreadyoff'), false)
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => everyone })
+  assert.ok(!result.disabled.includes('alreadyoff'), 'must not report an account it did not change')
+  assert.equal(enabled('alreadyoff'), false)
+})
+
+test('the sweep never re-enables an account the group still lists', async () => {
+  // An admin may have deliberately revoked someone who is still in media-users.
+  // Re-granting is a human action.
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => [...everyone, 'alreadyoff', 'outgroup'] })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('alreadyoff'), false)
+  assert.equal(enabled('outgroup'), false)
+})
+
+test('a username is read from the leading cn of a member DN', () => {
+  assert.equal(usernameFromMemberDn('cn=andrei,ou=users,dc=ldap,dc=goauthentik,dc=io'), 'andrei')
+  assert.equal(usernameFromMemberDn('CN=Andrei,OU=users,DC=io'), 'Andrei')
+  assert.equal(usernameFromMemberDn('uid=andrei,ou=users,dc=io'), '')
+  assert.equal(usernameFromMemberDn(''), '')
+  assert.equal(usernameFromMemberDn('ou=users,dc=io'), '')
+})
+
+test('RFC 4514 escaping in a member DN is undone', () => {
+  // escapeDnValue in src/ldap-auth.ts is the escaping this codebase produces.
+  assert.equal(usernameFromMemberDn('cn=last\\, first,ou=users,dc=io'), 'last, first')
+  assert.equal(usernameFromMemberDn('cn=a\\+b,ou=users,dc=io'), 'a+b')
+  assert.equal(usernameFromMemberDn('cn=a\\\\b,ou=users,dc=io'), 'a\\b')
+  assert.equal(usernameFromMemberDn('cn=a\\3Db,ou=users,dc=io'), 'a=b')
+  assert.equal(usernameFromMemberDn('cn=\\20spaced\\20,ou=users,dc=io'), 'spaced')
+  assert.equal(usernameFromMemberDn('cn=a\\22b,ou=users,dc=io'), 'a"b')
+})
+
+test('an escaped comma does not split the DN early', async () => {
+  const awkward = db.createUser('last, first', 'pw', 'user', 'unrestricted', undefined, 'ldap')
+  db.setStremioEnabled(awkward.id, true)
+  const result = await sweepStremioAccess({
+    membersOfMediaUsers: async () => [...everyone, usernameFromMemberDn('cn=last\\, first,ou=users,dc=io')],
+  })
+  assert.deepEqual(result.disabled, [])
+  assert.equal(enabled('last, first'), true)
+})
+
+// ── Fix round 1, commit 1: a lookup failure must be audible ─────────────────
+//
+// sweepStremioAccess swallowed the throw and returned no disabled accounts, so
+// the runner's catch never fired and disabled.length was zero: nothing was
+// logged. Wrong bind credentials, a renamed group, a firewall change or an
+// expired service account all produced an hourly silent no-op while the
+// household kept streaming after being removed from media-users.
+
+function stubLogger() {
+  const info: string[] = []
+  const warn: string[] = []
+  return { log: { info: (m: string) => info.push(m), warn: (m: string) => warn.push(m) }, info, warn }
+}
+
+test('a throwing lookup reports a reason and still writes nothing', async () => {
+  const before = enabled('ingroup')
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => { throw new Error('ldap down') } })
+  assert.deepEqual(result.disabled, [])
+  assert.ok(result.failed, 'the result must carry a failure reason')
+  assert.match(result.failed!, /ldap down/)
+  assert.equal(enabled('ingroup'), before)
+})
+
+test('an empty listing reports a reason too, since it is treated as a failure', async () => {
+  const result = await sweepStremioAccess({ membersOfMediaUsers: async () => [] })
+  assert.deepEqual(result.disabled, [])
+  assert.ok(result.failed, 'an empty listing is a failure and must say so')
+})
+
+test('the runner emits exactly one warning for a failed lookup', async () => {
+  const { log, info, warn } = stubLogger()
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => { throw new Error('ECONNREFUSED 127.0.0.1:1') } })
+  await run()
+  assert.equal(warn.length, 1, `expected one warning, got ${warn.length}: ${warn.join(' | ')}`)
+  assert.match(warn[0], /ECONNREFUSED/)
+  assert.match(warn[0], /nothing changed/i)
+  assert.equal(info.length, 0)
+})
+
+test('the runner says nothing on a clean pass', async () => {
+  const { log, warn } = stubLogger()
+  // Derived from the database rather than a constant, so an account added by an
+  // earlier test cannot make a "clean" pass revoke something.
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => allEnabledLdapUsernames() })
+  await run()
+  await run()
+  assert.deepEqual(warn, [])
+})
+
+test('the runner warns once, naming the accounts, when it revokes', async () => {
+  const victim = db.createUser('revokeme', 'pw', 'user', 'unrestricted', undefined, 'ldap')
+  db.setStremioEnabled(victim.id, true)
+  const keep = allEnabledLdapUsernames().filter(name => name !== 'revokeme')
+  const { log, warn } = stubLogger()
+  const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => keep })
+  await run()
+  assert.equal(warn.length, 1, warn.join(' | '))
+  assert.match(warn[0], /revokeme/)
+  assert.equal(enabled('revokeme'), false)
+})
+
+// ── Fix round 1, commit 2: a circuit breaker on mass revocation ─────────────
+//
+// A listing that parses into at least one usable name but matches nothing was
+// trusted completely, so a group of display names, or uid=-form DNs, or simply
+// the wrong group, took the whole household off the addon at once, from a timer,
+// with no user action to correlate against. The two listings below are the ones
+// the review measured.
+
+function freshHousehold() {
+  const suffix = randomUUID().slice(0, 8)
+  const names = [`alice-${suffix}`, `BOB-${suffix}`, `carol-${suffix}`]
+  const made = names.map(name => {
+    const user = db.createUser(name, 'pw', 'user', 'unrestricted', undefined, 'ldap')
+    db.setStremioEnabled(user.id, true)
+    return user
+  })
+  const local = db.createUser(`localguy-${suffix}`, 'pw', 'user', 'unrestricted')
+  db.setStremioEnabled(local.id, true)
+  // Everyone else in the database is parked so this household is the only
+  // enabled LDAP population the sweep can see.
+  const parked = db.listUsers()
+    .filter(user => user.authSource === 'ldap' && user.stremioEnabled && !made.some(m => m.id === user.id))
+  for (const user of parked) db.setStremioEnabled(user.id, false)
+  const restore = () => { for (const user of parked) db.setStremioEnabled(user.id, true) }
+  return { names, made, local, restore }
+}
+
+test('a listing of display names revokes nobody and warns instead', async () => {
+  const { names, local, restore } = freshHousehold()
+  try {
+    const { log, warn } = stubLogger()
+    const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => ['Andrei Dulvac', 'Bob Smith'] })
+    await run()
+    for (const name of names) assert.equal(enabled(name), true, `${name} must keep access`)
+    assert.equal(enabled(local.username), true)
+    assert.equal(warn.length, 1, warn.join(' | '))
+    assert.match(warn[0], /refus|blocked|every/i)
+    assert.match(warn[0], /2 member/, 'the warning must name how many members the listing produced')
+    assert.match(warn[0], /3/, 'and how many accounts it would have revoked')
+  } finally { restore() }
+})
+
+test('a multi-valued RDN listing revokes nobody either', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const { log, warn } = stubLogger()
+    const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => [`${names[0]}+uid=1`] })
+    await run()
+    for (const name of names) assert.equal(enabled(name), true, `${name} must keep access`)
+    assert.equal(warn.length, 1, warn.join(' | '))
+  } finally { restore() }
+})
+
+test('a pass blocked by the breaker reports it and leaves every flag untouched', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const result = await sweepStremioAccess({ membersOfMediaUsers: async () => ['nobody-at-all'] })
+    assert.deepEqual(result.disabled, [])
+    assert.ok(result.blocked, 'the result must say the breaker tripped')
+    assert.equal(result.failed, undefined, 'a tripped breaker is not a lookup failure')
+    for (const name of names) assert.equal(enabled(name), true)
+  } finally { restore() }
+})
+
+test('a listing missing exactly one of three accounts still revokes that one', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const result = await sweepStremioAccess({ membersOfMediaUsers: async () => [names[0], names[1]] })
+    assert.deepEqual(result.disabled, [names[2]])
+    assert.equal(result.blocked, undefined)
+    assert.equal(enabled(names[0]), true)
+    assert.equal(enabled(names[1]), true)
+    assert.equal(enabled(names[2]), false)
+  } finally { restore() }
+})
+
+test('the breaker does not block a lone account, because of the two-account floor', async () => {
+  const { names, made, restore } = freshHousehold()
+  try {
+    db.setStremioEnabled(made[1].id, false)
+    db.setStremioEnabled(made[2].id, false)
+    const result = await sweepStremioAccess({ membersOfMediaUsers: async () => ['someone-else'] })
+    assert.deepEqual(result.disabled, [names[0]])
+    assert.equal(result.blocked, undefined)
+    assert.equal(enabled(names[0]), false)
+  } finally { restore() }
+})
+
+// ── Fix round 1, commit 3: multi-valued RDNs, and one proof-of-life line ─────
+
+test('a multi-valued RDN yields just the cn value', () => {
+  // Splitting on unescaped commas only left 'alice+uid=1', a usable name that
+  // matches nothing, which pushes toward revocation rather than away from it.
+  assert.equal(usernameFromMemberDn('cn=alice+uid=1,ou=users,dc=io'), 'alice')
+  assert.equal(usernameFromMemberDn('cn=alice+uid=1'), 'alice')
+  assert.equal(usernameFromMemberDn('uid=1+cn=alice,ou=users,dc=io'), '')
+  // An escaped plus is part of the value, not a separator.
+  assert.equal(usernameFromMemberDn('cn=a\\+b,ou=users,dc=io'), 'a+b')
+  assert.equal(usernameFromMemberDn('cn=a\\2Bb,ou=users,dc=io'), 'a+b')
+})
+
+test('the first successful sweep logs the member count and the enabled count', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const { log, info, warn } = stubLogger()
+    const run = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => names })
+    await run()
+    assert.equal(warn.length, 0)
+    assert.equal(info.length, 1, info.join(' | '))
+    assert.match(info[0], /3 member/)
+    assert.match(info[0], /3 enabled/)
+    // Not per pass: the point is proof of life, not hourly noise.
+    await run()
+    await run()
+    assert.equal(info.length, 1, `expected one line ever, got ${info.length}`)
+  } finally { restore() }
+})
+
+test('a failed or blocked pass does not count as the first success', async () => {
+  const { names, restore } = freshHousehold()
+  try {
+    const { log, info, warn } = stubLogger()
+    const failing = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => { throw new Error('down') } })
+    await failing()
+    assert.equal(info.length, 0, 'a failure is not proof of life')
+
+    const blocked = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => ['nobody-at-all'] })
+    await blocked()
+    assert.equal(info.length, 0, 'a blocked pass is not proof of life either')
+    assert.equal(warn.length, 2)
+
+    const working = createStremioAccessSweepRunner(log, { membersOfMediaUsers: async () => names })
+    await working()
+    assert.equal(info.length, 1)
+  } finally { restore() }
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
+})
