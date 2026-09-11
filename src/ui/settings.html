@@ -1336,16 +1336,23 @@
   // action per account at a time.
   const stremioActionsInFlight = new Set()
 
+  // Checked at the click, before any confirmation: a native confirm() blocks the
+  // thread, so a second click lands the moment the first dialog closes, and asking
+  // twice before refusing the second is worse than not asking.
+  function stremioActionPending(user) {
+    if (!stremioActionsInFlight.has(user.id)) return false
+    showOut(`Still working on ${user.username}. Wait for that to finish.`, '')
+    return true
+  }
+
   async function runStremioAction(id, action, done) {
     const user = managedUsers.find(u => u.id === id)
     if (!user || user.isNew || user.deleted) {
       renderUsers()
       return
     }
-    if (stremioActionsInFlight.has(id)) {
-      showOut(`Still working on ${user.username}. Wait for that to finish.`, '')
-      return
-    }
+    // Last line of defence; the click handlers check first so no dialog appears.
+    if (stremioActionPending(user)) return
     stremioActionsInFlight.add(id)
     try {
       applyStremioResult(user, await postStremioAction(id, action))
@@ -1371,6 +1378,7 @@
   function rotateStremioInstallUrl(id) {
     const user = managedUsers.find(u => u.id === id)
     if (!user || user.isNew || user.deleted) return
+    if (stremioActionPending(user)) return
     // Captured before the request, because applyStremioResult overwrites
     // installUrl and the wording below depends on whether there was one.
     const hadUrl = !!user.installUrl
@@ -1385,6 +1393,7 @@
   function revokeStremioAccess(id) {
     const user = managedUsers.find(u => u.id === id)
     if (!user || user.isNew || user.deleted) return
+    if (stremioActionPending(user)) return
     if (!confirm(`Revoke Stremio access for ${user.username}? The install URL stops working immediately.`)) return
     void reportStremioFailure(runStremioAction(id, 'clear', fresh => `Stremio access revoked for ${fresh.username}.`))
   }
