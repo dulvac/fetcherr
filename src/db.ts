@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS stremio_plays (
   external_id TEXT NOT NULL,
   info_hash   TEXT NOT NULL DEFAULT '',
   title       TEXT NOT NULL DEFAULT '',
+  finalized_at TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX IF NOT EXISTS stremio_plays_user_day ON stremio_plays(user_id, played_on);
@@ -533,6 +534,7 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_play_cap INTEGER NOT NULL DEFAULT 30`) } catch { /* already exists */ }
     // Partial, so every account without a token can hold '' without colliding.
     try { _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS app_users_stremio_token ON app_users(stremio_token) WHERE stremio_token <> ''`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE stremio_plays ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     migrateLegacyUserData(_db)
   }
   return _db
@@ -1823,13 +1825,25 @@ export function reserveStremioPlay(play: {
   return reserve()
 }
 
-// Resolution failed, so the slot was never spent and must not count.
+// Resolution failed, so the slot was never spent and must not count. Only an
+// unfinalized row is released: two requests for the same file share one row, so an
+// unconditional delete here would remove a play another request had already served
+// and counted, leaving a viewer streaming with nothing recorded.
 export function releaseStremioPlay(id: number): void {
-  getDb().prepare(`DELETE FROM stremio_plays WHERE id = ?`).run(id)
+  getDb().prepare(`DELETE FROM stremio_plays WHERE id = ? AND finalized_at = ''`).run(id)
 }
 
-export function finalizeStremioPlay(id: number, title: string): void {
-  getDb().prepare(`UPDATE stremio_plays SET title = ? WHERE id = ?`).run(title, id)
+// Returns whether the row was still there. It may not be: two requests for the
+// same file share one row, and if the one that created it fails and releases it,
+// the other is left holding an id that no longer exists. The caller re-reserves
+// rather than serving a play nobody counted.
+export function finalizeStremioPlay(id: number, title: string): boolean {
+  const info = getDb().prepare(`
+    UPDATE stremio_plays
+    SET title = ?, finalized_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(title, id)
+  return info.changes === 1
 }
 
 export function authEnabled(): boolean {

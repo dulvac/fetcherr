@@ -666,3 +666,55 @@ test('an admin at the 200 cap is refused', async () => {
 test.after(() => {
   for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })
+
+// ── Leftovers, commit 2: no play may go uncounted ────────────────────────────
+//
+// Two requests for one file: the first creates the row, the second reads it as
+// created:false. If the first then fails and releases the row, the second's
+// finalize updates nothing and it returns 302 with zero counted plays. Before the
+// slot-reuse change this could not happen, because every request held its own row.
+
+test('a released shared row still leaves the succeeding request counted', async () => {
+  const { user, token: tok } = playbackUser('racer')
+  let gate: (() => void) | null = null
+  const opened = new Promise<void>(resolve => { gate = resolve })
+  let call = 0
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(stremioAddonRoutes, {
+    fetchStreams: async () => [{ name: 'A', infoHash: hashA }],
+    resolvePlayback: async () => {
+      call += 1
+      if (call === 1) {
+        // The failing request: hold until the second has reserved, so it really
+        // does observe created:false, then flake.
+        await opened
+        throw new Error('provider flake')
+      }
+      return { url: 'https://cdn.torbox.test/file.mkv', filename: 'a.mkv' }
+    },
+    fetchMeta: async () => null,
+  } as never)
+
+  const failing = app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })
+  // Let the first request reserve and reach the resolver before the second starts.
+  await new Promise(resolve => setTimeout(resolve, 10))
+  const secondStarted = app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  gate!()
+
+  const [first, second] = await Promise.all([failing, secondStarted])
+  assert.equal(first.statusCode, 404, 'the flaking request fails')
+  assert.equal(second.statusCode, 302, 'the good one still plays')
+  assert.equal(db.countStremioPlaysToday(user.id), 1, 'and the play it served must be counted')
+  await app.close()
+})
+
+test('twelve concurrent first-time requests for one title produce one row', async () => {
+  const { user, token: tok } = playbackUser('twelve')
+  const { app } = await countingApp()
+  const results = await Promise.all(Array.from({ length: 12 }, () =>
+    app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0111161/${hashA}` })))
+  assert.equal(results.filter(res => res.statusCode === 302).length, 12)
+  assert.equal(db.countStremioPlaysToday(user.id), 1)
+  await app.close()
+})

@@ -329,7 +329,7 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       return reply.code(429).send({ error: 'Daily play limit reached' })
     }
     // Only a row this request created may be released by this request's failure.
-    const releasableId = reservation?.created ? reservation.id : null
+    let releasableId = reservation.created ? reservation.id : null
 
     const label = `stremio ${parsed.mediaType} ${parsed.externalId} (${user.username})`
     try {
@@ -355,7 +355,25 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
         app.log.warn(`stremio: resolver returned no url for ${label}`)
         return reply.code(404).send({ error: 'No stream available' })
       }
-      finalizeStremioPlay(reservation.id, resolved.filename ?? '')
+      // A shared row can vanish underneath us: if the request that created it
+      // failed and released it, this one is holding a dead id, and finalizing
+      // nothing would serve a play that counts for nobody. Re-reserve through the
+      // same capped statement, never around it, so the cap still decides.
+      if (!finalizeStremioPlay(reservation.id, resolved.filename ?? '')) {
+        const again = reserveStremioPlay({
+          userId: user.id,
+          mediaType: parsed.mediaType,
+          externalId: parsed.externalId,
+          infoHash: wanted,
+          cap: playCapFor(user),
+        })
+        if (again === null) {
+          app.log.warn(`stremio: play cap reached for ${user.username} while re-counting ${label}`)
+          return reply.code(429).send({ error: 'Daily play limit reached' })
+        }
+        releasableId = again.created ? again.id : null
+        finalizeStremioPlay(again.id, resolved.filename ?? '')
+      }
       app.log.info(`stremio: play ${label} hash=${wanted} file=${resolved.filename ?? '?'}`)
       // The whole design rests on play re-resolving at click time, so nothing
       // may cache this redirect and pin a CDN URL that expires.

@@ -159,3 +159,29 @@ test('a cap of zero refuses every reservation', () => {
 test.after(() => {
   for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })
+
+// Two requests for one file share a row, so the loser of that race must not delete
+// a play the winner already served.
+test('releasing a finalized row is refused', () => {
+  const u = db.createUser('adopted', 'pw', 'user', 'unrestricted')
+  const reservation = db.reserveStremioPlay(play(u.id, { infoHash: '1'.repeat(40), cap: 5 }))
+  assert.equal(db.finalizeStremioPlay(reservation!.id, 'served.mkv'), true)
+  db.releaseStremioPlay(reservation!.id)
+  assert.equal(db.countStremioPlaysToday(u.id), 1, 'a counted play must survive another request\'s release')
+})
+
+test('finalizing a row that is gone reports it rather than silently doing nothing', () => {
+  const u = db.createUser('vanished', 'pw', 'user', 'unrestricted')
+  const reservation = db.reserveStremioPlay(play(u.id, { infoHash: '2'.repeat(40), cap: 5 }))
+  db.releaseStremioPlay(reservation!.id)
+  assert.equal(db.countStremioPlaysToday(u.id), 0)
+  assert.equal(db.finalizeStremioPlay(reservation!.id, 'too late.mkv'), false)
+})
+
+test('an unfinalized row is still released, so a failure does not consume a slot', () => {
+  const u = db.createUser('unfinalized', 'pw', 'user', 'unrestricted')
+  const reservation = db.reserveStremioPlay(play(u.id, { infoHash: '3'.repeat(40), cap: 1 }))
+  db.releaseStremioPlay(reservation!.id)
+  assert.equal(db.countStremioPlaysToday(u.id), 0)
+  assert.equal(db.reserveStremioPlay(play(u.id, { infoHash: '4'.repeat(40), cap: 1 }))?.created, true)
+})
