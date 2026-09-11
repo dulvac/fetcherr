@@ -19,3 +19,6 @@ yarn-error.log*
 
 # Throwaway probe scripts used while developing; never part of the build.
 .scratch/
+
+# Sibling worktrees for this repo live here; never commit them.
+.worktrees/

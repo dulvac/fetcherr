@@ -210,7 +210,7 @@ function userForToken(token: string): AppUser | null {
 // 200 is far above any real day's viewing and still bounds a leaked token.
 const ADMIN_PLAY_CAP = 200
 
-function playCapFor(user: AppUser): number {
+export function playCapFor(user: Pick<AppUser, 'role' | 'stremioPlayCap'>): number {
   return user.role === 'admin' ? ADMIN_PLAY_CAP : user.stremioPlayCap
 }
 

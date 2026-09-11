@@ -239,6 +239,18 @@ test('an account with no token lists an empty install URL', async () => {
   await app.close()
 })
 
+test('the payload reports the effective cap, so an admin row cannot claim the wrong one', async () => {
+  const app = await buildApp()
+  const res = await app.inject({ method: 'GET', url: '/ui/settings-data', headers: adminHeaders })
+  const users = res.json().users as Array<Record<string, unknown>>
+  const adminEntry = users.find(u => u.role === 'admin')!
+  // playCapFor overrides an admin's stored column, so the payload must carry the
+  // number actually enforced rather than leaving the UI to recompute the policy.
+  assert.equal(adminEntry.stremioPlayCap, 200)
+  assert.notEqual(db.getUserById(String(adminEntry.id))!.stremioPlayCap, 200)
+  await app.close()
+})
+
 // better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
 // once per run per file. Nothing else cleans them up.
 test.after(() => {

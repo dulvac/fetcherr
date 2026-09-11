@@ -1306,7 +1306,7 @@
     if (user.isNew) return 'Save the account first'
     if (user.deleted) return 'Pending delete'
     const limit = Number(user.stremioPlayCap ?? 0)
-    const perDay = user.role === 'admin' ? 'no daily limit' : `${limit} plays/day`
+    const perDay = `${limit} plays/day`
     if (user.installUrl && user.stremioEnabled) return `Active, ${perDay}`
     if (user.installUrl) return 'URL exists but access is off'
     if (user.stremioEnabled) return 'On, but no URL yet'
