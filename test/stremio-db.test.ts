@@ -58,8 +58,12 @@ test('enabled and cap round-trip', () => {
 
 test('plays are counted per user per day', () => {
   assert.equal(db.countStremioPlaysToday(user.id), 0)
-  db.recordStremioPlay({ userId: user.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'b'.repeat(40), title: 'Shawshank 1080p' })
-  db.recordStremioPlay({ userId: user.id, mediaType: 'movie', externalId: 'tt0111161', infoHash: 'b'.repeat(40), title: 'Shawshank 1080p' })
+  // Two distinct files, because reserving is the only way to write a play now and
+  // a repeat of one file deliberately reuses its row.
+  for (const infoHash of ['b'.repeat(40), 'c'.repeat(40)]) {
+    const reservation = db.reserveStremioPlay({ userId: user.id, mediaType: 'movie', externalId: 'tt0111161', infoHash, cap: 30 })
+    db.finalizeStremioPlay(reservation!.id, 'Shawshank 1080p')
+  }
   assert.equal(db.countStremioPlaysToday(user.id), 2)
   const other = db.getUserByUsername('friend2')!
   assert.equal(db.countStremioPlaysToday(other.id), 0)

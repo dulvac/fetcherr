@@ -1767,19 +1767,6 @@ export function countStremioPlaysToday(userId: string): number {
   return row.n
 }
 
-export function recordStremioPlay(play: {
-  userId: string
-  mediaType: string
-  externalId: string
-  infoHash: string
-  title: string
-}): void {
-  getDb().prepare(`
-    INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
-    VALUES (?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ?)
-  `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.title)
-}
-
 // Reserve a slot and count it in the same statement, because check-then-act
 // across an await does not hold: better-sqlite3 is synchronous and node is
 // single-threaded, so every request in a burst read the count before the first
