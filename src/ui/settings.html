@@ -1302,13 +1302,19 @@
     })
   }
 
+  // The host is shown because the link is for somebody else's device: if it ever
+  // names the LAN address, it will work for nobody and Stremio Web will refuse it.
+  function stremioLinkHost(installUrl) {
+    try { return new URL(installUrl).host } catch { return 'unknown host' }
+  }
+
   function stremioAccessState(user) {
     if (user.isNew) return 'Save the account first'
     if (user.deleted) return 'Pending delete'
     const limit = Number(user.stremioPlayCap ?? 0)
     const perDay = `${limit} plays/day`
-    if (user.installUrl && user.stremioEnabled) return `Active, ${perDay}`
-    if (user.installUrl) return 'URL exists but access is off'
+    if (user.installUrl && user.stremioEnabled) return `Active, ${perDay}, ${stremioLinkHost(user.installUrl)}`
+    if (user.installUrl) return `URL exists but access is off, ${stremioLinkHost(user.installUrl)}`
     if (user.stremioEnabled) return 'On, but no URL yet'
     return 'No access'
   }
