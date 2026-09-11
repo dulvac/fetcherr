@@ -17,6 +17,7 @@ import {
   clearStremioToken, mintStremioToken, setStremioEnabled, setStremioPlayCap,
 } from '../db.js'
 import { buildPlaybackOrigin } from '../play-auth.js'
+import { playCapFor } from '../stremio-addon.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
 import {
@@ -809,7 +810,7 @@ export async function uiRoutes(app: FastifyInstance) {
         maxRating: user.maxRating,
         searchEnabled: user.searchEnabled,
         stremioEnabled: user.stremioEnabled,
-        stremioPlayCap: user.stremioPlayCap,
+        stremioPlayCap: playCapFor(user),
         // Derived, never the raw token as its own field: the credential appears
         // only inside the install URL, and this endpoint is admin-only.
         installUrl: stremioInstallUrl(user.stremioToken, buildPlaybackOrigin(req.headers as Record<string, string | undefined>)),
@@ -1105,7 +1106,7 @@ export async function uiRoutes(app: FastifyInstance) {
     reply.header('Cache-Control', 'no-store')
     return {
       stremioEnabled: fresh.stremioEnabled,
-      stremioPlayCap: fresh.stremioPlayCap,
+      stremioPlayCap: playCapFor(fresh),
       installUrl: stremioInstallUrl(fresh.stremioToken, origin),
     }
   })
