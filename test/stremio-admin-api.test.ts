@@ -12,6 +12,9 @@ process.env.DATABASE_PATH = databasePath
 // once at load and an unset key is what keeps the rating lookups offline.
 process.env.TMDB_API_KEY = ''
 process.env.TVDB_API_KEY = ''
+// An install URL is for another person's device, so it must name the configured
+// public host rather than whatever Host the admin's browser happened to send.
+process.env.SERVER_URL = 'https://streaming.example.net'
 const db = await import('../src/db.js')
 const { uiRoutes } = await import('../src/ui/routes.js')
 // The session is established through production code, the same call the login
@@ -248,6 +251,22 @@ test('the payload reports the effective cap, so an admin row cannot claim the wr
   // number actually enforced rather than leaving the UI to recompute the policy.
   assert.equal(adminEntry.stremioPlayCap, 200)
   assert.notEqual(db.getUserById(String(adminEntry.id))!.stremioPlayCap, 200)
+  await app.close()
+})
+
+test('the install URL names the configured public host, not the requesting one', async () => {
+  const app = await buildApp()
+  const minted = await app.inject({
+    method: 'POST', url: `/api/users/${friend.id}/stremio`, headers: adminHeaders, payload: { action: 'mint' },
+  })
+  assert.equal(minted.statusCode, 200)
+  // The admin browses over the LAN address; the person receiving the link cannot.
+  const overLan = await app.inject({
+    method: 'GET', url: '/ui/settings-data', headers: { ...adminHeaders, host: '192.168.87.33:9990' },
+  })
+  const entry = (overLan.json().users as Array<Record<string, unknown>>).find(u => u.id === friend.id)!
+  assert.match(String(entry.installUrl), /^https:\/\/streaming\.example\.net\/stremio\//)
+  assert.equal(String(minted.json().installUrl).startsWith('https://streaming.example.net/'), true)
   await app.close()
 })
 

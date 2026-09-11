@@ -340,6 +340,21 @@ function stremioInstallUrl(stremioToken: string, origin: string): string {
   return stremioToken ? `${origin}/stremio/${stremioToken}/manifest.json` : ''
 }
 
+// An install URL is for somebody else's device, so it must name the host that
+// device can reach, not the one the admin happens to be browsing. Deriving it
+// from the request means opening Settings on the LAN address mints a link that
+// works nowhere else and that Stremio Web refuses outright for being plain HTTP.
+// The configured Server URL is the answer this deployment already has; the
+// request origin stays the fallback for an instance that never set one.
+// Play URLs inside a stream response are deliberately still request-derived,
+// because those are for the client that just asked, and a LAN client should get
+// a LAN URL.
+function stremioInstallOrigin(headers: Record<string, string | undefined>): string {
+  const configured = config.serverUrl.trim().replace(/\/$/, '')
+  if (configured && configured !== 'http://localhost:9990') return configured
+  return buildPlaybackOrigin(headers)
+}
+
 // setStremioPlayCap silently substitutes 30 for a negative or non-finite value,
 // so a typo in the UI would quietly reset a friend's cap to the default instead
 // of failing. Validate here and refuse, rather than leaning on that default.
@@ -813,7 +828,7 @@ export async function uiRoutes(app: FastifyInstance) {
         stremioPlayCap: playCapFor(user),
         // Derived, never the raw token as its own field: the credential appears
         // only inside the install URL, and this endpoint is admin-only.
-        installUrl: stremioInstallUrl(user.stremioToken, buildPlaybackOrigin(req.headers as Record<string, string | undefined>)),
+        installUrl: stremioInstallUrl(user.stremioToken, stremioInstallOrigin(req.headers as Record<string, string | undefined>)),
       })),
     }
   })
@@ -1101,7 +1116,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (typeof body.cap === 'number') setStremioPlayCap(user.id, body.cap)
 
     const fresh = getUserById(user.id)!
-    const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
+    const origin = stremioInstallOrigin(req.headers as Record<string, string | undefined>)
     // The body carries a credential, so nothing may cache it.
     reply.header('Cache-Control', 'no-store')
     return {
