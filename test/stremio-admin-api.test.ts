@@ -254,6 +254,26 @@ test('the payload reports the effective cap, so an admin row cannot claim the wr
   await app.close()
 })
 
+test('a stored LAN Server URL cannot leak into an install URL', async () => {
+  const app = await buildApp()
+  const { config } = await import('../src/config.js')
+  const original = config.serverUrl
+  // This is the live deployment's actual state: the stored setting overrides the
+  // env at boot and pointed at the LAN address, which is how a broken link got
+  // handed out in the first place.
+  config.serverUrl = 'http://192.168.87.33:9990'
+  try {
+    const res = await app.inject({
+      method: 'POST', url: `/api/users/${friend.id}/stremio`, headers: adminHeaders, payload: { action: 'mint' },
+    })
+    assert.equal(res.statusCode, 200)
+    assert.match(String(res.json().installUrl), /^https:\/\/streaming\.example\.net\/stremio\//)
+  } finally {
+    config.serverUrl = original
+  }
+  await app.close()
+})
+
 test('the install URL names the configured public host, not the requesting one', async () => {
   const app = await buildApp()
   const minted = await app.inject({

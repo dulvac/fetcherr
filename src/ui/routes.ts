@@ -351,14 +351,35 @@ function stremioInstallUrl(stremioToken: string, origin: string): string {
 // device can reach, not the one the admin happens to be browsing. Deriving it
 // from the request means opening Settings on the LAN address mints a link that
 // works nowhere else and that Stremio Web refuses outright for being plain HTTP.
-// The configured Server URL is the answer this deployment already has; the
-// request origin stays the fallback for an instance that never set one.
+//
+// Every candidate is therefore tested rather than trusted. The stored Server URL
+// wins when it is usable, but it is operator-editable and on this deployment it
+// was the LAN address, which is exactly the failure this function exists to stop.
 // Play URLs inside a stream response are deliberately still request-derived,
 // because those are for the client that just asked, and a LAN client should get
 // a LAN URL.
+function reachableByAnotherDevice(origin: string): boolean {
+  if (!origin) return false
+  let url: URL
+  try { url = new URL(origin) } catch { return false }
+  // Stremio Web fetches the manifest with XHR from an https page, so a plain-http
+  // origin cannot be installed there at all.
+  if (url.protocol !== 'https:') return false
+  const host = url.hostname
+  // A bare address is either private or a public IP nobody should be handing out
+  // as a durable install URL.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return false
+  return host !== 'localhost' && !host.endsWith('.local')
+}
+
 function stremioInstallOrigin(headers: Record<string, string | undefined>): string {
-  const configured = config.serverUrl.trim().replace(/\/$/, '')
-  if (configured && configured !== 'http://localhost:9990') return configured
+  const candidates = [config.serverUrl, config.serverUrlFromEnv, buildPlaybackOrigin(headers)]
+  for (const candidate of candidates) {
+    const trimmed = (candidate ?? '').trim().replace(/\/$/, '')
+    if (reachableByAnotherDevice(trimmed)) return trimmed
+  }
+  // Nothing usable configured. Fall back to the request so the URL is at least
+  // self-consistent, and let the Settings row show the host it named.
   return buildPlaybackOrigin(headers)
 }
 
