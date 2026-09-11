@@ -134,6 +134,12 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 
 All other configuration is managed through the Settings UI and stored in the database.
 
-When `LDAP_URL` and `LDAP_USER_DN` are both set, logins first try an LDAP bind with the user's credentials and fall back to local accounts, so the local admin keeps working. Users that authenticate via LDAP but don't exist yet are created automatically with `LDAP_DEFAULT_ROLE`.
+When `LDAP_URL` and `LDAP_USER_DN` are both set, a login for a username that already has a local account checks that local password first, and only asks the directory if it does not match. Any other username goes straight to an LDAP bind, and a directory user who has never signed in before is created automatically with `LDAP_DEFAULT_ROLE`. Connect and operation timeouts are 2 seconds each, so a directory that stops answering delays a login by a few seconds at worst and never blocks the local admin, whose password is checked before any bind.
+
+Accounts created by an LDAP login have no password of their own, so they sign in through the directory or not at all. Local accounts are unaffected and keep working if the directory is down.
+
+**Every account in the directory can sign in.** There is no group or filter restriction yet, so pointing `LDAP_URL` at a directory with many users means any of them can log in and get an account on first sign-in. Point it at a directory whose users you are happy to admit, or keep using local accounts.
 
 The Users section of the Settings UI shows whether LDAP is configured and which server URL is in use. Accounts created through an LDAP login carry an LDAP badge, and their password cannot be changed from Fetcherr; manage those credentials in the directory instead.
+
+If a username changes in the directory, rename the Fetcherr account to match through the Users API (`POST /ui/users` with the account id and the new username). That relink keeps the watch history, which a new auto-provisioned account would not.
