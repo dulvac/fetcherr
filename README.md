@@ -131,10 +131,14 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 | `LDAP_URL` | Optional LDAP server for login, e.g. `ldap://authentik-ldap:3389` or `ldaps://ldap.example.com:636`. Requires `LDAP_USER_DN`. |
 | `LDAP_USER_DN` | DN template for LDAP binds, with `{username}` as placeholder, e.g. `cn={username},ou=users,dc=ldap,dc=goauthentik,dc=io` |
 | `LDAP_DEFAULT_ROLE` | Role for users auto-created after a successful LDAP login: `user` (default) or `kids` |
+| `LDAP_CONNECT_TIMEOUT_MS` | How long to wait for the LDAP connection itself (default: 2000) |
+| `LDAP_TIMEOUT_MS` | How long to wait for the bind to be answered (default: 10000). Raise it if valid logins are refused on slow directory hardware |
 
 All other configuration is managed through the Settings UI and stored in the database.
 
-When `LDAP_URL` and `LDAP_USER_DN` are both set, a username that already has a local account is authenticated locally and only locally: the directory is never asked about it. Every other username goes straight to an LDAP bind, and a directory user who has never signed in before is created automatically with `LDAP_DEFAULT_ROLE`. Connect and operation timeouts are 2 seconds each, so a directory that stops answering slows down only the logins that need it, never the local admin.
+When `LDAP_URL` and `LDAP_USER_DN` are both set, a username that already has a local account is authenticated locally and only locally: the directory is never asked about it. Every other username goes straight to an LDAP bind, and a directory user who has never signed in before is created automatically with `LDAP_DEFAULT_ROLE`.
+
+Connecting is capped at 2 seconds and the bind itself at 10 seconds, both configurable. The split matters: a directory that is not listening fails in about a second, while a directory that is merely slow still gets to answer. Against an Authentik LDAP outpost on NAS hardware a bind takes around 2 to 3 seconds, because it runs the provider's whole password stage, so a short cap on the bind refuses valid logins. Only logins that need the directory wait at all, never a local account.
 
 Local usernames stay local deliberately. A directory entry with the same name belongs to whoever controls that entry, who is not necessarily the same person, so admitting it would hand over the local account along with whatever role it has. There is no way yet to attach an existing local account to a directory identity, so a local user who wants to sign in with directory credentials keeps using their local password until there is.
 

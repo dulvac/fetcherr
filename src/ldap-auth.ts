@@ -20,10 +20,21 @@ const LDAP_USER_DN = process.env.LDAP_USER_DN ?? ''
 const LDAP_DEFAULT_ROLE: AppUserRole =
   process.env.LDAP_DEFAULT_ROLE === 'kids' ? 'kids' : 'user'
 
-// Both halves of a bind are capped, so a directory that accepts connections and
-// then goes quiet costs a login attempt at most 2 x this. Kept deliberately
-// short: every login that is not a known local account waits for it.
-const LDAP_TIMEOUT_MS = 2000
+// Reaching the directory is a local network hop, but the bind itself runs the
+// provider's whole password stage, which is a slow hash plus flow execution.
+// Measured against an Authentik LDAP outpost on NAS hardware: 1.9s to reject a
+// wrong password, 2.9s to reject an unknown user, and longer to accept a valid
+// one. So connect impatiently and bind patiently: a directory that is not
+// listening still fails in about a second, while a slow one is not mistaken for
+// a wrong password. Both are overridable because this cost belongs to someone
+// else's directory, not to Fetcherr.
+function timeoutEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name])
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+}
+
+const LDAP_CONNECT_TIMEOUT_MS = timeoutEnv('LDAP_CONNECT_TIMEOUT_MS', 2000)
+const LDAP_TIMEOUT_MS = timeoutEnv('LDAP_TIMEOUT_MS', 10000)
 
 export function ldapEnabled(): boolean {
   return Boolean(LDAP_URL && LDAP_USER_DN.includes('{username}'))
@@ -40,7 +51,7 @@ function escapeDnValue(value: string): string {
 
 async function ldapBind(username: string, password: string): Promise<boolean> {
   if (!password) return false // empty password = unauthenticated bind, always refuse
-  const client = new Client({ url: LDAP_URL, timeout: LDAP_TIMEOUT_MS, connectTimeout: LDAP_TIMEOUT_MS })
+  const client = new Client({ url: LDAP_URL, timeout: LDAP_TIMEOUT_MS, connectTimeout: LDAP_CONNECT_TIMEOUT_MS })
   try {
     // Replacer function so `$` sequences in usernames are inserted literally
     // instead of being expanded as replacement patterns.
