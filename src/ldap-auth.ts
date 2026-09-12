@@ -63,15 +63,19 @@ export async function authenticateUser(username: string, password: string): Prom
   if (!name) return null
   if (!ldapEnabled()) return verifyUserCredentials(name, password)
 
-  // A username that already belongs to a local account is verified locally
-  // first, so an unreachable directory adds nothing to the local admin's login.
-  // This is also the whole outage story: a local account with the right password
-  // never needs the directory. A wrong one still falls through to the bind,
-  // because the same username may exist in both places with two passwords.
+  // A username that already belongs to a local account is a local credential and
+  // nothing else. Falling through to a bind here would let any directory entry
+  // that happens to share the string sign in as that account and inherit its
+  // role, so a local admin could be taken over by whoever controls a directory
+  // entry of the same name. Two identities that share a string stay separate;
+  // tying one to the directory has to be a deliberate admin act.
   const existing = getUserByUsername(name)
   if (existing?.authSource === 'local') {
     const local = verifyUserCredentials(name, password)
-    if (local) return local
+    // Says why in the one case an admin will ask about: a directory user whose
+    // name collides with a local account, wondering why their password fails.
+    if (!local) console.log(`ldap: "${name}" is a local account, so the directory was not consulted`)
+    return local
   }
 
   if (await ldapBind(name, password)) {
@@ -80,8 +84,8 @@ export async function authenticateUser(username: string, password: string): Prom
     // through the directory only, so the local hash is never a usable credential.
     return createUser(name, randomBytes(24).toString('hex'), LDAP_DEFAULT_ROLE, '', undefined, 'ldap')
   }
-  // Nothing is left to try: a local account was checked above, an
-  // LDAP-provisioned one has no password of its own, and an unknown username
-  // has nothing to check against.
+  // Nothing is left to try: a local username returned above, an LDAP-provisioned
+  // account has no password of its own, and an unknown username has nothing to
+  // check against.
   return null
 }

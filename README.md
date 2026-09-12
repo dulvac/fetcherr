@@ -134,7 +134,9 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 
 All other configuration is managed through the Settings UI and stored in the database.
 
-When `LDAP_URL` and `LDAP_USER_DN` are both set, a login for a username that already has a local account checks that local password first, and only asks the directory if it does not match. Any other username goes straight to an LDAP bind, and a directory user who has never signed in before is created automatically with `LDAP_DEFAULT_ROLE`. Connect and operation timeouts are 2 seconds each, so a directory that stops answering delays a login by a few seconds at worst and never blocks the local admin, whose password is checked before any bind.
+When `LDAP_URL` and `LDAP_USER_DN` are both set, a username that already has a local account is authenticated locally and only locally: the directory is never asked about it. Every other username goes straight to an LDAP bind, and a directory user who has never signed in before is created automatically with `LDAP_DEFAULT_ROLE`. Connect and operation timeouts are 2 seconds each, so a directory that stops answering slows down only the logins that need it, never the local admin.
+
+Local usernames stay local deliberately. A directory entry with the same name belongs to whoever controls that entry, who is not necessarily the same person, so admitting it would hand over the local account along with whatever role it has. There is no way yet to attach an existing local account to a directory identity, so a local user who wants to sign in with directory credentials keeps using their local password until there is.
 
 Accounts created by an LDAP login have no password of their own, so they sign in through the directory or not at all. Local accounts are unaffected and keep working if the directory is down.
 
