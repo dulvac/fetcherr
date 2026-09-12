@@ -26,7 +26,7 @@ const meta = { id: 'tt0111161', name: 'Shawshank', releaseInfo: '1994' } as Stre
 const base: AppUser = {
   id: 'u1', username: 'kid', passwordHash: '', role: 'kids', maxRating: '1',
   searchEnabled: false, stremioToken: '', stremioEnabled: true,
-  stremioPlayCap: 30, createdAt: '', updatedAt: '',
+  stremioPlayCap: 30, authSource: 'local', createdAt: '', updatedAt: '',
 }
 
 test('an unrestricted account is always allowed', async () => {

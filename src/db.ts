@@ -79,6 +79,7 @@ export interface Episode {
 export type MediaType = 'movie' | 'show'
 export type ManualShowMode = 'all' | 'latest'
 export type AppUserRole = 'admin' | 'user' | 'kids'
+export type AppUserAuthSource = 'local' | 'ldap'
 
 export interface AppUser {
   id: string
@@ -90,6 +91,7 @@ export interface AppUser {
   stremioToken: string
   stremioEnabled: boolean
   stremioPlayCap: number
+  authSource: AppUserAuthSource
   createdAt: string
   updatedAt: string
 }
@@ -314,6 +316,7 @@ CREATE TABLE IF NOT EXISTS app_users (
   role          TEXT NOT NULL CHECK (role IN ('admin', 'user', 'kids')),
   max_rating    TEXT NOT NULL DEFAULT 'unrestricted',
   search_enabled INTEGER NOT NULL DEFAULT 1,
+  auth_source   TEXT NOT NULL DEFAULT 'local',
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -531,6 +534,7 @@ export function getDb(): Database.Database {
     try { _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS app_users_stremio_token ON app_users(stremio_token) WHERE stremio_token <> ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE stremio_plays ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     migrateAppUserSearchEnabled(_db)
+    migrateAppUserAuthSource(_db)
     migrateLegacyUserData(_db)
   }
   return _db
@@ -591,6 +595,7 @@ function row2appUser(r: Record<string, unknown>): AppUser {
     stremioToken: (r.stremio_token as string) ?? '',
     stremioEnabled: Number(r.stremio_enabled ?? 0) !== 0,
     stremioPlayCap: Number(r.stremio_play_cap ?? 30),
+    authSource: r.auth_source === 'ldap' ? 'ldap' : 'local',
     createdAt: (r.created_at as string) ?? '',
     updatedAt: (r.updated_at as string) ?? '',
   }
@@ -694,6 +699,12 @@ function migrateAppUserSearchEnabled(db: Database.Database): void {
     db.exec(`ALTER TABLE app_users ADD COLUMN search_enabled INTEGER NOT NULL DEFAULT 1`)
     db.prepare(`UPDATE app_users SET search_enabled = 0 WHERE role = 'kids'`).run()
   })()
+}
+
+function migrateAppUserAuthSource(db: Database.Database): void {
+  const columns = db.prepare(`PRAGMA table_info(app_users)`).all() as Array<{ name: string }>
+  if (columns.some(column => column.name === 'auth_source')) return
+  db.exec(`ALTER TABLE app_users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'`)
 }
 
 function migrateLegacyUserData(db: Database.Database): void {
@@ -1652,6 +1663,7 @@ export function createUser(
   role: AppUserRole,
   maxRating: string,
   searchEnabled = defaultSearchEnabledForRole(role),
+  authSource: AppUserAuthSource = 'local',
 ): AppUser {
   const normalized = normalizeUsername(username)
   if (!normalized) throw new Error('Username is required')
@@ -1659,9 +1671,9 @@ export function createUser(
   const id = role === 'admin' && countUsers() === 0 ? DEFAULT_ADMIN_USER_ID : randomGuidLikeId()
   const effectiveMaxRating = effectiveMaxRatingForRole(role, maxRating)
   getDb().prepare(`
-    INSERT INTO app_users (id, username, password_hash, role, max_rating, search_enabled, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-  `).run(id, normalized, hashPassword(password), role, effectiveMaxRating, searchEnabled ? 1 : 0)
+    INSERT INTO app_users (id, username, password_hash, role, max_rating, search_enabled, auth_source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  `).run(id, normalized, hashPassword(password), role, effectiveMaxRating, searchEnabled ? 1 : 0, authSource)
   return getUserById(id)!
 }
 
