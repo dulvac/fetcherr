@@ -50,6 +50,11 @@ const databasePath = join(tmpdir(), `fetcherr-ldap-${randomUUID()}.db`)
 process.env.DATABASE_PATH = databasePath
 process.env.LDAP_URL = `ldap://127.0.0.1:${port}`
 process.env.LDAP_USER_DN = 'cn={username},ou=users,dc=example,dc=com'
+// Short on purpose so the hang-mode tests stay quick. The point of asserting
+// against a configured value rather than a constant is that the default was
+// once too low to accept a real login, and only configuration fixed that.
+process.env.LDAP_CONNECT_TIMEOUT_MS = '800'
+process.env.LDAP_TIMEOUT_MS = '1200'
 
 // Imported after the environment is set: both modules read it at load time.
 const db = await import('../src/db.js')
@@ -128,12 +133,14 @@ test('a local account never waits for the directory', async () => {
   assert.ok(wrong.ms < 500, `expected no directory round trip, took ${wrong.ms}ms`)
 })
 
-test('a login that does need the directory is capped at the bind timeout', async () => {
+test('a login that does need the directory is capped by the configured timeout', async () => {
   mode = 'hang'
   const { value, ms } = await timed(() => authenticateUser('nobody', 'whatever'))
   assert.equal(value, null)
-  assert.ok(ms >= 1500, `expected a bind attempt, took only ${ms}ms`)
-  assert.ok(ms < 4000, `expected the 2s cap, took ${ms}ms`)
+  // Long enough to prove a bind was attempted, short enough to prove
+  // LDAP_TIMEOUT_MS was honoured rather than some hard-coded constant.
+  assert.ok(ms >= 900, `expected a bind attempt, took only ${ms}ms`)
+  assert.ok(ms < 3000, `expected the configured 1.2s cap, took ${ms}ms`)
 })
 
 test('an empty password is refused before any bind', async () => {
