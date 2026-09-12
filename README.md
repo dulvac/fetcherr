@@ -131,6 +131,9 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 | `LDAP_URL` | Optional LDAP server for login, e.g. `ldap://authentik-ldap:3389` or `ldaps://ldap.example.com:636`. Requires `LDAP_USER_DN`. |
 | `LDAP_USER_DN` | DN template for LDAP binds, with `{username}` as placeholder, e.g. `cn={username},ou=users,dc=ldap,dc=goauthentik,dc=io` |
 | `LDAP_DEFAULT_ROLE` | Role for users auto-created after a successful LDAP login: `user` (default) or `kids` |
+| `LDAP_BIND_DN` | Optional service account DN used to read group membership for the Stremio access sweep, e.g. `cn=ldap-bind,ou=users,dc=ldap,dc=goauthentik,dc=io` |
+| `LDAP_BIND_PASSWORD` | Password for `LDAP_BIND_DN` |
+| `LDAP_GROUP_DN` | Group whose members keep Stremio access, e.g. `cn=media-users,ou=groups,dc=ldap,dc=goauthentik,dc=io` |
 
 All other configuration is managed through the Settings UI and stored in the database.
 
@@ -145,3 +148,5 @@ Accounts created by an LDAP login have no password of their own, so they sign in
 The Users section of the Settings UI shows whether LDAP is configured and which server URL is in use. Accounts created through an LDAP login carry an LDAP badge, and their password cannot be changed from Fetcherr; manage those credentials in the directory instead.
 
 If a username changes in the directory, rename the Fetcherr account to match through the Users API (`POST /ui/users` with the account id and the new username). That relink keeps the watch history, which a new auto-provisioned account would not.
+
+An install URL is a bearer credential checked against Fetcherr's own record, so disabling someone in the directory does not stop them streaming on its own. With `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD` and `LDAP_GROUP_DN` all set alongside working LDAP login, Fetcherr reads `LDAP_GROUP_DN` once an hour and turns off Stremio access for LDAP accounts that are no longer members. It only ever disables, never re-grants, and it leaves local accounts alone. If the group cannot be read, or the member list comes back in a shape Fetcherr does not recognise, it changes nothing and logs why: an unreadable directory must not revoke the household. Leave any of the three variables unset and the sweep never starts. This part is specific to this fork and is not in the upstream project.

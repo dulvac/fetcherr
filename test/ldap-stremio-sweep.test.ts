@@ -1,10 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-process.env.DATABASE_PATH = join(tmpdir(), `fetcherr-ldap-sweep-${randomUUID()}.db`)
+const databasePath = join(tmpdir(), `fetcherr-ldap-sweep-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
 const db = await import('../src/db.js')
 const { createStremioAccessSweepRunner, sweepStremioAccess, stremioSweepConfigured, usernameFromMemberDn } = await import('../src/ldap-stremio-sweep.js')
 
@@ -326,4 +328,10 @@ test('a failed or blocked pass does not count as the first success', async () =>
     await working()
     assert.equal(info.length, 1)
   } finally { restore() }
+})
+
+// better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
+// once per run per file. Nothing else cleans them up.
+test.after(() => {
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${databasePath}${suffix}`, { force: true })
 })
