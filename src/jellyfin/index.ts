@@ -3155,11 +3155,15 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const normalizedHeaders = Object.fromEntries(
       Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value[0] ?? '' : value ?? '']),
     )
-    const mediaSources = await playbackMediaSourcesFor(opts, {
+    // Detail screens get the same tracks PlaybackInfo does, from the same cached
+    // lookup, because some clients build their subtitle menu from this response.
+    const subtitles = subtitlesFor(input.playPath)
+    const baseSources = await playbackMediaSourcesFor(opts, {
       ...input,
       origin: buildPlaybackOrigin(normalizedHeaders),
       playbackClient: playbackClientFromHeaders(headers),
     })
+    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, requestUser(headers)?.subtitleLanguage ?? '')
     return {
       ...item,
       MediaSources: mediaSources,
