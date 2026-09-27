@@ -1,3 +1,5 @@
+import { DEFAULT_SUBTITLE_LANGUAGES, parseSubtitleLanguages } from './subtitle-lang.js'
+
 export function normalizeSootioUrl(value: string): string {
   return value.trim().replace(/\/manifest\.json\/?$/i, '').replace(/\/$/, '')
 }
@@ -277,6 +279,20 @@ export function parsePositiveIntegerSetting(value: string | undefined, fallback:
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
+// Unset means the build default, English only. An explicit empty value stays
+// empty, which means no language filter at all, so the two must stay distinct.
+export function parseSubtitleLanguageSetting(value: string | undefined): string[] {
+  if (value == null) return [...DEFAULT_SUBTITLE_LANGUAGES]
+  return parseSubtitleLanguages(value).languages
+}
+
+// Without a cap a popular title yields over a hundred tracks.
+export function parseSubtitleMaxPerLanguage(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? '', 10)
+  if (!Number.isFinite(parsed)) return 3
+  return Math.min(20, Math.max(1, parsed))
+}
+
 export const config = {
   port:       parseInt(process.env.PORT ?? '9990'),
   host:       process.env.HOST ?? '0.0.0.0',
@@ -320,6 +336,12 @@ export const config = {
   stremioSearchSource: parseStremioSearchSource(process.env.STREMIO_SEARCH_SOURCE),
   mediaSourceSelection: parseBooleanSetting(process.env.MEDIA_SOURCE_SELECTION, false),
   mediaSourceLimit: parseMediaSourceLimit(process.env.MEDIA_SOURCE_LIMIT),
+  subtitleProviderUrls: parseStreamProviderUrls(process.env.SUBTITLE_PROVIDER_URLS ?? ''),
+  subtitleLanguages: parseSubtitleLanguageSetting(process.env.SUBTITLE_LANGUAGES),
+  subtitleMaxPerLanguage: parseSubtitleMaxPerLanguage(process.env.SUBTITLE_MAX_PER_LANGUAGE),
+  // Overridable because what counts as slow depends on the provider and the
+  // network in between, not on Fetcherr.
+  subtitleTimeoutMs: parsePositiveIntegerSetting(process.env.SUBTITLE_TIMEOUT_MS, 4000),
   serverUrl:         (process.env.SERVER_URL ?? 'http://localhost:9990').replace(/\/$/, ''),
   // The same value, kept out of reach of the stored settings that overwrite
   // serverUrl at boot. An operator can point Server URL at a LAN address for
