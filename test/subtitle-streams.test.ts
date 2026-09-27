@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { attachSubtitleStreams, parsePlayPath } from '../src/subtitle-streams.js'
+import { attachSubtitleStreams, parsePlayPath, subtitleContentType } from '../src/subtitle-streams.js'
 import type { SubtitleTrack } from '../src/subtitles.js'
 
 const TRACKS: SubtitleTrack[] = [
@@ -42,50 +42,57 @@ test('a path it cannot read yields no lookup', () => {
   }
 })
 
-test('subtitle streams follow the existing streams and point at the provider', () => {
-  const [out] = attachSubtitleStreams([source()], TRACKS, '')
+test('subtitle streams follow the existing streams and point at this server', () => {
+  const [out] = attachSubtitleStreams([source()], TRACKS, '', 'item-1')
   const streams = out.MediaStreams as Stream[]
   assert.equal(streams.length, 5)
   assert.deepEqual(streams[2], {
     Type: 'Subtitle', Index: 2, Codec: 'srt', Language: 'eng', DisplayTitle: 'English 1',
     IsExternal: true, IsTextSubtitleStream: true, SupportsExternalStream: true,
-    DeliveryMethod: 'External', DeliveryUrl: 'https://subs.example/a', IsExternalUrl: true, IsDefault: false,
+    DeliveryMethod: 'External', DeliveryUrl: '/Videos/item-1/src/Subtitles/2/0/Stream.srt', IsExternalUrl: false, IsDefault: false,
   })
   assert.deepEqual(streams.slice(2).map(stream => [stream.Index, stream.Codec, stream.DeliveryUrl]), [
-    [2, 'srt', 'https://subs.example/a'],
-    [3, 'srt', 'https://subs.example/b'],
-    [4, 'vtt', 'https://subs.example/c.vtt'],
+    [2, 'srt', '/Videos/item-1/src/Subtitles/2/0/Stream.srt'],
+    [3, 'srt', '/Videos/item-1/src/Subtitles/3/0/Stream.srt'],
+    [4, 'vtt', '/Videos/item-1/src/Subtitles/4/0/Stream.vtt'],
   ])
   assert.equal('DefaultSubtitleStreamIndex' in out, false)
 })
 
 test('a preferred language selects its first track and nothing else', () => {
-  const [english] = attachSubtitleStreams([source()], TRACKS, 'eng')
+  const [english] = attachSubtitleStreams([source()], TRACKS, 'eng', 'item-1')
   assert.equal(english.DefaultSubtitleStreamIndex, 2)
   assert.deepEqual((english.MediaStreams as Stream[]).slice(2).map(stream => stream.IsDefault), [true, false, false])
-  const [romanian] = attachSubtitleStreams([source()], TRACKS, 'rum')
+  const [romanian] = attachSubtitleStreams([source()], TRACKS, 'rum', 'item-1')
   assert.equal(romanian.DefaultSubtitleStreamIndex, 4)
 })
 
 test('a preference with no matching track selects nothing', () => {
-  const [out] = attachSubtitleStreams([source()], TRACKS, 'ger')
+  const [out] = attachSubtitleStreams([source()], TRACKS, 'ger', 'item-1')
   assert.equal('DefaultSubtitleStreamIndex' in out, false)
   assert.ok((out.MediaStreams as Stream[]).every(stream => stream.Type !== 'Subtitle' || stream.IsDefault === false))
 })
 
 test('indices follow however many streams each source already has', () => {
   const three = { Id: 'three', MediaStreams: [{ Index: 0 }, { Index: 1 }, { Index: 2 }] }
-  const [a, b] = attachSubtitleStreams([three, { Id: 'bare' }], TRACKS.slice(0, 1), '')
+  const [a, b] = attachSubtitleStreams([three, { Id: 'bare' }], TRACKS.slice(0, 1), '', 'item-1')
   assert.equal((a.MediaStreams as Stream[])[3].Index, 3)
   assert.equal((b.MediaStreams as Stream[])[0].Index, 0)
 })
 
 test('the sources given are left alone, and no tracks returns them as they were', () => {
   const original = source()
-  const [out] = attachSubtitleStreams([original], TRACKS, 'eng')
+  const [out] = attachSubtitleStreams([original], TRACKS, 'eng', 'item-1')
   assert.notEqual(out, original)
   assert.equal(original.MediaStreams.length, 2)
   assert.equal('DefaultSubtitleStreamIndex' in original, false)
   const untouched = [source()]
-  assert.equal(attachSubtitleStreams(untouched, [], 'eng'), untouched)
+  assert.equal(attachSubtitleStreams(untouched, [], 'eng', 'item-1'), untouched)
+})
+
+test('subtitle files go out with the type Jellyfin uses and the provider\'s charset', () => {
+  assert.equal(subtitleContentType('srt', 'application/x-subrip; charset=utf-8'), 'application/x-subrip; charset=utf-8')
+  assert.equal(subtitleContentType('vtt', null), 'text/vtt')
+  assert.equal(subtitleContentType('ass', 'text/plain; charset=windows-1252'), 'text/x-ssa; charset=windows-1252')
+  assert.equal(subtitleContentType('weird', null), 'text/plain')
 })

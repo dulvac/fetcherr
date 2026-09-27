@@ -47,12 +47,14 @@ export function attachSubtitleStreams(
   sources: Array<Record<string, unknown>>,
   tracks: SubtitleTrack[],
   preferredLanguage: string,
+  itemId: string,
 ): Array<Record<string, unknown>> {
   if (!tracks.length) return sources
   const defaultAt = preferredLanguage ? tracks.findIndex(track => track.lang === preferredLanguage) : -1
   return sources.map(source => {
     const existing = Array.isArray(source.MediaStreams) ? source.MediaStreams as unknown[] : []
     const first = existing.length
+    const sourceId = String(source.Id ?? '')
     const subtitleStreams = tracks.map((track, i) => ({
       Type: 'Subtitle',
       Index: first + i,
@@ -63,8 +65,10 @@ export function attachSubtitleStreams(
       IsTextSubtitleStream: true,
       SupportsExternalStream: true,
       DeliveryMethod: 'External',
-      DeliveryUrl: track.url,
-      IsExternalUrl: true,
+      // Server-relative, as real Jellyfin sends it: the players on this network
+      // fetch subtitles from their own server and nowhere else.
+      DeliveryUrl: `/Videos/${itemId}/${sourceId}/Subtitles/${first + i}/0/Stream.${track.format}`,
+      IsExternalUrl: false,
       IsDefault: i === defaultAt,
     }))
     const next: Record<string, unknown> = { ...source, MediaStreams: [...existing, ...subtitleStreams] }
@@ -80,4 +84,19 @@ export const FIRST_SUBTITLE_STREAM_INDEX = 2
 
 export function subtitleTrackAtIndex(tracks: SubtitleTrack[], streamIndex: number): SubtitleTrack | null {
   return tracks[streamIndex - FIRST_SUBTITLE_STREAM_INDEX] ?? null
+}
+
+const SUBTITLE_CONTENT_TYPES: Record<string, string> = {
+  srt: 'application/x-subrip',
+  vtt: 'text/vtt',
+  ass: 'text/x-ssa',
+  ssa: 'text/x-ssa',
+}
+
+// The type Jellyfin serves each format with. The charset is the provider's, when
+// it declared one, because only the provider knows how the file is encoded.
+export function subtitleContentType(format: string, providerContentType: string | null): string {
+  const type = SUBTITLE_CONTENT_TYPES[format] ?? 'text/plain'
+  const charset = /charset=([^;\s]+)/i.exec(providerContentType ?? '')?.[1]
+  return charset ? `${type}; charset=${charset}` : type
 }
