@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { config } from './config.js'
 import {
   countStremioPlaysToday, finalizeStremioPlay, getUserByStremioToken, hasRatingLimit,
@@ -7,8 +7,11 @@ import {
 import { buildPlaybackOrigin } from './play-auth.js'
 import { extractHashFromStream, type Stream, type StremioMediaType, type StremioMeta } from './sootio.js'
 import { canUserAccessStremioMeta } from './stremio-rating.js'
+import type { SubtitleExtra, SubtitleTrack } from './subtitles.js'
 
-export const ADDON_VERSION = '1.0.0'
+// Bumped when the manifest changes, so installed clients can tell. 1.1.0 added
+// the subtitles resource.
+export const ADDON_VERSION = '1.1.0'
 export const ADDON_ID = 'io.fetcherr.streams'
 
 export interface ParsedStremioId {
@@ -31,7 +34,7 @@ export function buildManifest(): Record<string, unknown> {
     version: ADDON_VERSION,
     name: `${config.serverName} Streams`,
     description: 'Debrid streams resolved by Fetcherr.',
-    resources: ['stream'],
+    resources: ['stream', 'subtitles'],
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
     catalogs: [],
@@ -141,6 +144,42 @@ export function orderByPinnedHash(streams: Stream[], infoHash: string): Stream[]
   return [...pinned, ...rest]
 }
 
+const VIDEO_HASH = /^[0-9a-f]{16}$/
+const VIDEO_SIZE = /^\d{1,15}$/
+
+// The extra segment is a querystring before .json, as the addon SDK router builds
+// it: videoHash=...&videoSize=...&filename=... Only plausible values are kept,
+// because they go into a URL fetched on the viewer's behalf. The caller passes
+// the raw segment, still percent-encoded, so an & inside a filename stays part
+// of the filename.
+export function parseSubtitleExtra(rawSegment: string): SubtitleExtra | null {
+  if (typeof rawSegment !== 'string' || !rawSegment.endsWith('.json')) return null
+  const params = new URLSearchParams(rawSegment.slice(0, -'.json'.length))
+  const extra: SubtitleExtra = {}
+  const hash = params.get('videoHash')?.toLowerCase()
+  if (hash && VIDEO_HASH.test(hash)) extra.videoHash = hash
+  const size = params.get('videoSize')
+  if (size && VIDEO_SIZE.test(size)) extra.videoSize = size
+  const filename = params.get('filename')?.trim()
+  if (filename && filename.length <= 255 && !/[\u0000-\u001f]/.test(filename)) extra.filename = filename
+  return extra
+}
+
+// The protocol has no default-track field, and the client's own language setting
+// chooses, so on Stremio an account's preference can only move its language to
+// the front.
+export function orderPreferredFirst<T extends { lang: string }>(tracks: T[], preferred: string): T[] {
+  if (!preferred) return tracks
+  return [...tracks.filter(track => track.lang === preferred), ...tracks.filter(track => track.lang !== preferred)]
+}
+
+// The last path segment exactly as the client sent it. Fastify decodes route
+// params, which would turn a %26 inside a filename into a separator.
+function rawLastSegment(url: string): string {
+  const path = url.split('?')[0]
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 //
 // Everything below sits under /stremio/, and nothing else may be registered
@@ -163,6 +202,9 @@ export interface StremioAddonRouteOptions {
   fetchStreams: (mediaType: StremioMediaType, externalId: string) => Promise<Stream[]>
   resolvePlayback: (streams: Stream[], label: string, cacheKey: string) => Promise<{ url: string; filename?: string }>
   fetchMeta: (mediaType: StremioMediaType, imdbId: string) => Promise<StremioMeta | null>
+  // Optional, so a registration without it answers the subtitles resource with an
+  // empty list rather than failing.
+  fetchSubtitles?: (mediaType: StremioMediaType, externalId: string, extra?: SubtitleExtra) => Promise<SubtitleTrack[]>
 }
 
 // The token is a path segment, so fastify's own request logging and every
@@ -189,7 +231,7 @@ export function redactStremioToken(url: string, mountPath = ''): string {
   return `${anchor}${tokenHint(token)}${tail}`
 }
 
-// Applied to all three routes. Fastify emits its own request line before any
+// Applied to every route here. Fastify emits its own request line before any
 // handler or onRequest hook runs, so redacting inside a handler would be too
 // late: 'silent' suppresses the route's automatic request and response logging
 // entirely, and the onResponse hook below puts back one line with the token
@@ -288,6 +330,44 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     app.log.info(`stremio: ${mapped.length} of ${streams.length} candidates for ${parsed.externalId} (${user.username})`)
     if (!mapped.length) return notice('No streams available right now.')
     return reply.headers(ADDON_HEADERS).send({ streams: mapped })
+  })
+
+  // Subtitles for a title, with or without the file details a client can send.
+  // Every refusal is an empty list: unlike a stream list there is no notice entry
+  // to explain one. No play is counted and the cap is not consulted, because a
+  // lookup spends nothing. HEAD stays auto-exposed for the same reason.
+  async function answerSubtitles(req: FastifyRequest, reply: FastifyReply, rawId: string, rawExtra: string | null) {
+    const { token, mediaType } = req.params as { token: string; mediaType: string }
+    const user = userForToken(token)
+    if (!user) return reply.code(404).send(NOT_FOUND)
+    const empty = () => reply.headers(ADDON_HEADERS).send({ subtitles: [] })
+
+    const parsed = parseStremioStreamId(mediaType, rawId)
+    if (!parsed || !opts.fetchSubtitles) return empty()
+    const extra = rawExtra === null ? undefined : parseSubtitleExtra(rawExtra)
+    if (extra === null) return empty()
+    if (await ratingRefusesMeta(user, parsed, opts)) return empty()
+
+    let tracks: SubtitleTrack[] = []
+    try {
+      tracks = await opts.fetchSubtitles(parsed.mediaType, parsed.externalId, extra)
+    } catch (err) {
+      app.log.warn(`stremio: subtitle lookup failed for ${parsed.externalId} (${user.username}): ${err}`)
+      return empty()
+    }
+    const subtitles = orderPreferredFirst(tracks, user.subtitleLanguage)
+      .map(track => ({ id: track.id, url: track.url, lang: track.lang, label: track.label }))
+    return reply.headers(ADDON_HEADERS).send({ subtitles })
+  }
+
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/subtitles/:mediaType/:id`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    return answerSubtitles(req, reply, id, null)
+  })
+
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/subtitles/:mediaType/:id/:extra`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    return answerSubtitles(req, reply, `${id}.json`, rawLastSegment(req.url))
   })
 
   // exposeHeadRoute false because fastify would otherwise auto-register HEAD

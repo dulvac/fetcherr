@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildManifest, parseStremioStreamId } from '../src/stremio-addon.js'
+import { buildManifest, orderPreferredFirst, parseStremioStreamId, parseSubtitleExtra } from '../src/stremio-addon.js'
 
-test('the manifest declares a stream-only addon', () => {
+test('the manifest declares streams and subtitles', () => {
   const m = buildManifest() as Record<string, unknown>
-  assert.deepEqual(m.resources, ['stream'])
+  assert.deepEqual(m.resources, ['stream', 'subtitles'])
   assert.deepEqual(m.types, ['movie', 'series'])
   assert.deepEqual(m.idPrefixes, ['tt'])
   assert.deepEqual(m.catalogs, [])
@@ -76,4 +76,27 @@ test('returns null on non-string input instead of throwing', () => {
   assert.equal(parseStremioStreamId('movie', null as never), null)
   assert.equal(parseStremioStreamId('movie', 123 as never), null)
   assert.equal(parseStremioStreamId('movie', {} as never), null)
+})
+
+test('the subtitle extra segment yields the file details a provider can match on', () => {
+  assert.deepEqual(
+    parseSubtitleExtra('videoHash=8E245D9679D31E12&videoSize=652696576&filename=The.Movie.2019.1080p.mkv.json'),
+    { videoHash: '8e245d9679d31e12', videoSize: '652696576', filename: 'The.Movie.2019.1080p.mkv' },
+  )
+  assert.deepEqual(parseSubtitleExtra('filename=Tom%20%26%20Jerry%20(1940).mkv.json'), { filename: 'Tom & Jerry (1940).mkv' })
+})
+
+test('anything in the extra segment that is not a plausible file detail is dropped', () => {
+  assert.deepEqual(parseSubtitleExtra('videoHash=nothex&videoSize=-1&token=abc.json'), {})
+  assert.deepEqual(parseSubtitleExtra(`filename=${'a'.repeat(256)}.json`), {})
+  assert.deepEqual(parseSubtitleExtra('filename=bad%0Aname.mkv.json'), {})
+  assert.equal(parseSubtitleExtra('videoHash=8e245d9679d31e12'), null)
+  assert.equal(parseSubtitleExtra(42 as never), null)
+})
+
+test('the preferred language moves to the front and nothing else moves', () => {
+  const tracks = [{ lang: 'eng', id: 'a' }, { lang: 'rum', id: 'b' }, { lang: 'eng', id: 'c' }, { lang: 'rum', id: 'd' }]
+  assert.deepEqual(orderPreferredFirst(tracks, 'rum').map(track => track.id), ['b', 'd', 'a', 'c'])
+  assert.deepEqual(orderPreferredFirst(tracks, '').map(track => track.id), ['a', 'b', 'c', 'd'])
+  assert.deepEqual(orderPreferredFirst(tracks, 'ger').map(track => track.id), ['a', 'b', 'c', 'd'])
 })
