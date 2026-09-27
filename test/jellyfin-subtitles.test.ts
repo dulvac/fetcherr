@@ -34,6 +34,8 @@ const romanian = db.createUser('mum', 'pw', 'user', 'unrestricted')
 db.updateUser(romanian.id, { subtitleLanguage: 'ro' })
 const german = db.createUser('dad', 'pw', 'user', 'unrestricted')
 db.updateUser(german.id, { subtitleLanguage: 'de' })
+// Rating-limited below the R-rated movie, which the subtitle route must respect.
+const kid = db.createUser('kid', 'pw', 'kids', '1')
 
 db.upsertMovie({
   tmdbId: MOVIE_TMDB, imdbId: 'tt0111161', mediaLanguage: 'en', title: 'The Shawshank Redemption', year: 1994,
@@ -65,7 +67,7 @@ function issueToken(userId: string): string {
     .run(token, userId, Date.now() + 3_600_000)
   return token
 }
-const tokens = { admin: issueToken(admin.id), romanian: issueToken(romanian.id), german: issueToken(german.id) }
+const tokens = { admin: issueToken(admin.id), romanian: issueToken(romanian.id), german: issueToken(german.id), kid: issueToken(kid.id) }
 
 const TRACKS: SubtitleTrack[] = [
   { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt' },
@@ -184,19 +186,14 @@ test('with media source selection on, every offered version carries the subtitle
   }
 })
 
-async function appWithRegistry() {
-  const registered = new Map<string, string>()
+async function appWithSubtitles() {
   const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
-  await app.register(jellyfinRoutes, {
-    lookupSubtitles: recording,
-    registerPlaybackItem: (itemId: string, playPath: string) => { registered.set(itemId, playPath) },
-    playPathForItem: (itemId: string) => registered.get(itemId) ?? null,
-  } as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: recording } as never)
   return app
 }
 
 test('a client fetching a subtitle by stream index is sent to that track\'s file', async () => {
-  const app = await appWithRegistry()
+  const app = await appWithSubtitles()
   const info = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
   const source = (info.json().MediaSources as Array<Record<string, unknown>>)[0]
   const subtitleStreams = (source.MediaStreams as Array<Record<string, unknown>>).filter(stream => stream.Type === 'Subtitle')
@@ -217,17 +214,28 @@ test('a client fetching a subtitle by stream index is sent to that track\'s file
   await app.close()
 })
 
-test('a subtitle fetch the server cannot place is refused', async () => {
-  const app = await appWithRegistry()
-  // Before any PlaybackInfo, nothing is registered for the item.
-  const early = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt` })
-  assert.equal(early.statusCode, 404)
+test('a subtitle fetch works without a prior PlaybackInfo, as after a restart', async () => {
+  const app = await appWithSubtitles()
+  const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt` })
+  await app.close()
+  assert.equal(res.statusCode, 302)
+  assert.equal(res.headers.location, 'https://subs.example/a')
+})
 
-  await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+test('a subtitle fetch the server cannot place, or the account may not see, is refused', async () => {
+  const app = await appWithSubtitles()
   for (const index of ['0', '1', '5', '99', '-1', 'abc']) {
     const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/${index}/0/Stream.srt` })
     assert.equal(res.statusCode, 404, `index ${index}`)
   }
+  // An item that resolves to nothing.
+  const unknownItem = `00000000-0000-4000-8000-${(999999).toString(16).padStart(12, '0')}`
+  const unknown = await app.inject({ method: 'GET', url: `/Videos/${unknownItem}/${unknownItem}/Subtitles/2/0/Stream.srt` })
+  assert.equal(unknown.statusCode, 404)
+  // A rating-limited account cannot reach the R-rated movie's subtitles, even
+  // with a source id that names the item: its own token decides.
+  const limited = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.kid } })
+  assert.equal(limited.statusCode, 404)
   // A source id that does not name the item needs a signed-in account.
   const stranger = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt` })
   assert.equal(stranger.statusCode, 401)
