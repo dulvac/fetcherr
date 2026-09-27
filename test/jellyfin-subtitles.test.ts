@@ -183,3 +183,55 @@ test('with media source selection on, every offered version carries the subtitle
     assert.equal(source.DefaultSubtitleStreamIndex, 4)
   }
 })
+
+async function appWithRegistry() {
+  const registered = new Map<string, string>()
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, {
+    lookupSubtitles: recording,
+    registerPlaybackItem: (itemId: string, playPath: string) => { registered.set(itemId, playPath) },
+    playPathForItem: (itemId: string) => registered.get(itemId) ?? null,
+  } as never)
+  return app
+}
+
+test('a client fetching a subtitle by stream index is sent to that track\'s file', async () => {
+  const app = await appWithRegistry()
+  const info = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+  const source = (info.json().MediaSources as Array<Record<string, unknown>>)[0]
+  const subtitleStreams = (source.MediaStreams as Array<Record<string, unknown>>).filter(stream => stream.Type === 'Subtitle')
+  assert.equal(subtitleStreams.length, 3)
+  for (const stream of subtitleStreams) {
+    for (const path of [
+      `/Videos/${MOVIE_ITEM}/${source.Id}/Subtitles/${stream.Index}/0/Stream.${stream.Codec}`,
+      `/Videos/${MOVIE_ITEM}/${source.Id}/Subtitles/${stream.Index}/Stream.${stream.Codec}`,
+      `/videos/${MOVIE_ITEM}/${source.Id}:candidate:${'a'.repeat(32)}/Subtitles/${stream.Index}/0/Stream.${stream.Codec}`,
+    ]) {
+      // No token, as the players in the production log sent none: the source id
+      // naming the item is what lets it through.
+      const res = await app.inject({ method: 'GET', url: path })
+      assert.equal(res.statusCode, 302, path)
+      assert.equal(res.headers.location, stream.DeliveryUrl, path)
+    }
+  }
+  await app.close()
+})
+
+test('a subtitle fetch the server cannot place is refused', async () => {
+  const app = await appWithRegistry()
+  // Before any PlaybackInfo, nothing is registered for the item.
+  const early = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt` })
+  assert.equal(early.statusCode, 404)
+
+  await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+  for (const index of ['0', '1', '5', '99', '-1', 'abc']) {
+    const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/${index}/0/Stream.srt` })
+    assert.equal(res.statusCode, 404, `index ${index}`)
+  }
+  // A source id that does not name the item needs a signed-in account.
+  const stranger = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt` })
+  assert.equal(stranger.statusCode, 401)
+  const signedIn = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.admin } })
+  assert.equal(signedIn.statusCode, 302)
+  await app.close()
+})

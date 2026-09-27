@@ -24,7 +24,7 @@ import type { Movie, Show, Season, Episode } from '../db.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
-import { attachSubtitleStreams, parsePlayPath } from '../subtitle-streams.js'
+import { attachSubtitleStreams, parsePlayPath, subtitleTrackAtIndex } from '../subtitle-streams.js'
 import type { SubtitleTrack } from '../subtitles.js'
 import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
 import {
@@ -166,6 +166,10 @@ type JellyfinRouteOptions = {
   // Subtitles for a play, looked up by the ids the stream providers use. Optional,
   // so a registration without it serves the media sources it always served.
   lookupSubtitles?: (mediaType: StremioMediaType, externalId: string) => Promise<SubtitleTrack[]>
+  // The play path a recent PlaybackInfo registered for this item, or null. The
+  // subtitle fetch route resolves an item through it, because the stream index a
+  // client asks for was handed out by that PlaybackInfo.
+  playPathForItem?: (itemId: string) => string | null
 }
 type ImageKind = 'poster' | 'backdrop' | 'logo' | 'profile'
 type ImageQuery = {
@@ -4137,4 +4141,37 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   }
 
   for (const path of streamRoutePaths) app.get(path, streamHandler)
+
+  // Infuse and VidHub read the subtitle streams from PlaybackInfo but ignore the
+  // absolute DeliveryUrl: like any Jellyfin client they fetch
+  // /Videos/{item}/{source}/Subtitles/{index}/.../Stream.{format} from us. Answer
+  // with a redirect to the provider's file, so the bytes still never pass through
+  // here.
+  const subtitleRoutePaths = [
+    '/Videos/:id/:mediaSourceId/Subtitles/:index/:startTicks/Stream.:format',
+    '/Videos/:id/:mediaSourceId/Subtitles/:index/Stream.:format',
+    '/videos/:id/:mediaSourceId/Subtitles/:index/:startTicks/Stream.:format',
+    '/videos/:id/:mediaSourceId/Subtitles/:index/Stream.:format',
+  ]
+
+  const subtitleHandler = async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, mediaSourceId, index } = req.params as { id: string; mediaSourceId: string; index: string }
+    const queryToken = tokenFromQuery(req.query)
+    const headersWithToken = queryToken
+      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': queryToken }
+      : req.headers as Record<string, string | string[] | undefined>
+    // The same bar the stream route sets: a signed-in account, or a media source
+    // id that names this item, which is what a player sends when it attaches no token.
+    const sourceNamesItem = mediaSourceId === id || mediaSourceId.startsWith(`${id}:candidate:`)
+    if (!requestUser(headersWithToken) && !sourceNamesItem) return reply.code(401).send({ error: 'Unauthorized' })
+
+    const streamIndex = Number(index)
+    const playPath = opts.playPathForItem?.(id) ?? null
+    if (!Number.isInteger(streamIndex) || !playPath) return reply.code(404).send({ error: 'Not found' })
+    const track = subtitleTrackAtIndex(await subtitlesFor(playPath), streamIndex)
+    if (!track) return reply.code(404).send({ error: 'Not found' })
+    return reply.redirect(track.url, 302)
+  }
+
+  for (const path of subtitleRoutePaths) app.get(path, subtitleHandler)
 }
