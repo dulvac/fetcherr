@@ -167,10 +167,6 @@ type JellyfinRouteOptions = {
   // Subtitles for a play, looked up by the ids the stream providers use. Optional,
   // so a registration without it serves the media sources it always served.
   lookupSubtitles?: (mediaType: StremioMediaType, externalId: string) => Promise<SubtitleTrack[]>
-  // The play path a recent PlaybackInfo registered for this item, or null. The
-  // subtitle fetch route resolves an item through it, because the stream index a
-  // client asks for was handed out by that PlaybackInfo.
-  playPathForItem?: (itemId: string) => string | null
 }
 type ImageKind = 'poster' | 'backdrop' | 'logo' | 'profile'
 type ImageQuery = {
@@ -4068,6 +4064,66 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     '/videos/:id/original.:container',
   ]
 
+  function headersWithQueryToken(req: FastifyRequest): Record<string, string | string[] | undefined> {
+    const queryToken = tokenFromQuery(req.query)
+    return queryToken
+      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': queryToken }
+      : req.headers as Record<string, string | string[] | undefined>
+  }
+
+  type ItemPlayPath = { playPath: string } | { status: number; body?: unknown }
+
+  // The play path an item id resolves to for this account, with the same access
+  // checks as PlaybackInfo. Shared by the stream redirect and the subtitle
+  // redirect so the two can never disagree about who may reach what.
+  async function playPathForUser(id: string, user: AppUser): Promise<ItemPlayPath> {
+    if (id === SEARCH_DISABLED_ITEM_ID) {
+      return { status: 409, body: { error: 'Search disabled', message: 'Fetcherr Search Disabled' } }
+    }
+
+    const stremioEpisode = idToStremioEpisode(id)
+    if (stremioEpisode) {
+      const { series, episode } = stremioEpisode
+      if (!await canUserAccessStremioMeta(user, series, 'series')) return { status: 404 }
+      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
+      return { playPath: `/play/stremio/series/${encodeURIComponent(externalId)}` }
+    }
+
+    const stremioSearch = idToStremioSearchMeta(id)
+    if (stremioSearch) {
+      const { meta, mediaType } = stremioSearch
+      if (mediaType !== 'movie') return { status: 404 }
+      if (!await canUserAccessStremioMeta(user, meta, mediaType)) return { status: 404 }
+      const externalId = await resolveStremioPlaybackExternalId(meta, 'movie')
+      return { playPath: `/play/stremio/movie/${encodeURIComponent(externalId)}` }
+    }
+
+    const epRef = idToEpisode(id)
+    if (epRef) {
+      if (isLibraryItemHidden('show', epRef.showTmdbId)) return { status: 404 }
+      const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
+      if (!show?.imdbId) return { status: 404 }
+      if (!canUserAccessShow(user, show)) return { status: 404 }
+      return { playPath: `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}` }
+    }
+
+    const searchMovieTmdbId = idToSearchMovieTmdb(id)
+    if (searchMovieTmdbId) {
+      const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
+      if (!movie?.imdbId) return { status: 404 }
+      if (!canUserAccessMovie(user, movie)) return { status: 404 }
+      if (!isMovieVisibleToLibrary(movie)) return { status: 409, body: { error: 'Title not yet available', message: 'Not Yet Released' } }
+      return { playPath: `/play/${movie.imdbId}` }
+    }
+
+    const tmdbId = idToTmdb(id)
+    const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
+    if (!movie?.imdbId) return { status: 404 }
+    if (!canUserAccessMovie(user, movie)) return { status: 404 }
+    if (!isMovieVisibleToLibrary(movie)) return { status: 409, body: { error: 'Title not yet available', message: 'Not Yet Released' } }
+    return { playPath: `/play/${movie.imdbId}` }
+  }
+
   const streamHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string }
     const query = req.query as { playSessionId?: string; PlaySessionId?: string; mediaSourceId?: string; MediaSourceId?: string } | undefined
@@ -4080,65 +4136,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       && mediaSourceId?.startsWith(`${id}:candidate:`)
       && opts.validatePlaybackCandidate?.(candidate, id),
     )
-    const queryToken = tokenFromQuery(req.query)
-    const headersWithToken = queryToken
-      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': queryToken }
-      : req.headers as Record<string, string | string[] | undefined>
-    const user = requestUser(headersWithToken) ?? ((sessionMatches || sourceMatches || candidateMatches) ? fallbackUser() : null)
+    const user = requestUser(headersWithQueryToken(req)) ?? ((sessionMatches || sourceMatches || candidateMatches) ? fallbackUser() : null)
 
     if (!user) return reply.code(401).send({ error: 'Unauthorized' })
 
+    const resolved = await playPathForUser(id, user)
+    if (!('playPath' in resolved)) return reply.code(resolved.status).send(resolved.body)
     const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
-    if (id === SEARCH_DISABLED_ITEM_ID) {
-      return reply.code(409).send({ error: 'Search disabled', message: 'Fetcherr Search Disabled' })
-    }
-
-    const stremioEpisode = idToStremioEpisode(id)
-    if (stremioEpisode) {
-      const { series, episode } = stremioEpisode
-      if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send()
-      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
-      const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
-      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
-    }
-
-    const stremioSearch = idToStremioSearchMeta(id)
-    if (stremioSearch) {
-      const { meta, mediaType } = stremioSearch
-      if (mediaType !== 'movie') return reply.code(404).send()
-      if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send()
-      const externalId = await resolveStremioPlaybackExternalId(meta, 'movie')
-      const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
-      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
-    }
-
-    const epRef = idToEpisode(id)
-    if (epRef) {
-      if (isLibraryItemHidden('show', epRef.showTmdbId)) return reply.code(404).send()
-      const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
-      if (!show?.imdbId) return reply.code(404).send()
-      if (!canUserAccessShow(user, show)) return reply.code(404).send()
-      const playPath = `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`
-      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
-    }
-
-    const searchMovieTmdbId = idToSearchMovieTmdb(id)
-    if (searchMovieTmdbId) {
-      const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
-      if (!movie?.imdbId) return reply.code(404).send()
-      if (!canUserAccessMovie(user, movie)) return reply.code(404).send()
-      if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
-      const playPath = `/play/${movie.imdbId}`
-      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
-    }
-
-    const tmdbId = idToTmdb(id)
-    const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
-    if (!movie?.imdbId) return reply.code(404).send()
-    if (!canUserAccessMovie(user, movie)) return reply.code(404).send()
-    if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
-    const playPath = `/play/${movie.imdbId}`
-    return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
+    return reply.redirect(signedPlaybackUrlForMediaSource(origin, resolved.playPath, mediaSourceId), 302)
   }
 
   for (const path of streamRoutePaths) app.get(path, streamHandler)
@@ -4157,19 +4162,18 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
   const subtitleHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     const { id, mediaSourceId, index } = req.params as { id: string; mediaSourceId: string; index: string }
-    const queryToken = tokenFromQuery(req.query)
-    const headersWithToken = queryToken
-      ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': queryToken }
-      : req.headers as Record<string, string | string[] | undefined>
-    // The same bar the stream route sets: a signed-in account, or a media source
-    // id that names this item, which is what a player sends when it attaches no token.
+    // The same bar as the stream route: the signed-in account, or, for a player
+    // that attaches no token, a media source id naming the item. Either way the
+    // item is resolved for that account, so its rating limit applies here too.
     const sourceNamesItem = mediaSourceId === id || mediaSourceId.startsWith(`${id}:candidate:`)
-    if (!requestUser(headersWithToken) && !sourceNamesItem) return reply.code(401).send({ error: 'Unauthorized' })
+    const user = requestUser(headersWithQueryToken(req)) ?? (sourceNamesItem ? fallbackUser() : null)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
 
     const streamIndex = Number(index)
-    const playPath = opts.playPathForItem?.(id) ?? null
-    if (!Number.isInteger(streamIndex) || !playPath) return reply.code(404).send({ error: 'Not found' })
-    const track = subtitleTrackAtIndex(await subtitlesFor(playPath), streamIndex)
+    if (!Number.isInteger(streamIndex)) return reply.code(404).send({ error: 'Not found' })
+    const resolved = await playPathForUser(id, user)
+    if (!('playPath' in resolved)) return reply.code(404).send({ error: 'Not found' })
+    const track = subtitleTrackAtIndex(await subtitlesFor(resolved.playPath), streamIndex)
     if (!track) return reply.code(404).send({ error: 'Not found' })
     return reply.redirect(track.url, 302)
   }
