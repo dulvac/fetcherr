@@ -64,6 +64,7 @@ export function attachSubtitleStreams(
       SupportsExternalStream: true,
       DeliveryMethod: 'External',
       DeliveryUrl: track.url,
+      IsExternalUrl: true,
       IsDefault: i === defaultAt,
     }))
     const next: Record<string, unknown> = { ...source, MediaStreams: [...existing, ...subtitleStreams] }

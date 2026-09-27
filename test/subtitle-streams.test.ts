@@ -49,7 +49,7 @@ test('subtitle streams follow the existing streams and point at the provider', (
   assert.deepEqual(streams[2], {
     Type: 'Subtitle', Index: 2, Codec: 'srt', Language: 'eng', DisplayTitle: 'English 1',
     IsExternal: true, IsTextSubtitleStream: true, SupportsExternalStream: true,
-    DeliveryMethod: 'External', DeliveryUrl: 'https://subs.example/a', IsDefault: false,
+    DeliveryMethod: 'External', DeliveryUrl: 'https://subs.example/a', IsExternalUrl: true, IsDefault: false,
   })
   assert.deepEqual(streams.slice(2).map(stream => [stream.Index, stream.Codec, stream.DeliveryUrl]), [
     [2, 'srt', 'https://subs.example/a'],
