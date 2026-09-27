@@ -1,0 +1,145 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import Fastify from 'fastify'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import type { StremioMediaType } from '../src/sootio.js'
+import type { SubtitleTrack } from '../src/subtitles.js'
+
+const databasePath = join(tmpdir(), `fetcherr-jellyfin-subtitles-${randomUUID()}.db`)
+process.env.DATABASE_PATH = databasePath
+// A fixed secret keeps the signed play URLs deterministic.
+process.env.PLAYBACK_SIGNING_SECRET = 'jellyfin-subtitles-test-secret'
+// The rating gate resolves unknown ratings through TMDB and TVDB, and without
+// keys both return early. Set before the dynamic imports, because config reads
+// the environment once at module load.
+process.env.TMDB_API_KEY = ''
+process.env.TVDB_API_KEY = ''
+
+const db = await import('../src/db.js')
+const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/index.js')
+
+// The item ids jellyfin/index.ts derives: a movie carries its tmdb id in the low
+// bits, an episode carries show, season and episode.
+const MOVIE_TMDB = 278
+const MOVIE_ITEM = `00000000-0000-4000-8000-${MOVIE_TMDB.toString(16).padStart(12, '0')}`
+const SHOW_TMDB = 1396
+const EPISODE_ITEM = `00000000-0000-4000-8003-${SHOW_TMDB.toString(16).padStart(6, '0')}${(1).toString(16).padStart(3, '0')}${(1).toString(16).padStart(3, '0')}`
+
+// The first account created takes the default admin id, so it goes first.
+const admin = db.createUser('admin', 'pw', 'admin', 'unrestricted')
+const romanian = db.createUser('mum', 'pw', 'user', 'unrestricted')
+db.updateUser(romanian.id, { subtitleLanguage: 'ro' })
+const german = db.createUser('dad', 'pw', 'user', 'unrestricted')
+db.updateUser(german.id, { subtitleLanguage: 'de' })
+
+db.upsertMovie({
+  tmdbId: MOVIE_TMDB, imdbId: 'tt0111161', mediaLanguage: 'en', title: 'The Shawshank Redemption', year: 1994,
+  overview: '', posterPath: '', backdropPath: '', logoPath: '', genres: '[]', runtimeMins: 142, popularity: 0,
+  officialRating: 'R', communityRating: 0, studiosJson: '[]', tagsJson: '[]', castJson: '[]',
+  releaseDate: '1994-09-23', digitalReleaseDate: '1994-09-23', syncedAt: new Date().toISOString(),
+})
+db.upsertShow({
+  tmdbId: SHOW_TMDB, imdbId: 'tt0903747', tvdbId: 81189, mediaLanguage: 'en', title: 'Breaking Bad', year: 2008,
+  overview: '', posterPath: '', backdropPath: '', logoPath: '', genres: '[]', status: 'Ended', numSeasons: 5,
+  popularity: 0, officialRating: 'TV-MA', communityRating: 0, studiosJson: '[]', tagsJson: '[]', castJson: '[]',
+  syncedAt: new Date().toISOString(),
+})
+db.upsertEpisode({
+  showTmdbId: SHOW_TMDB, seasonNumber: 1, episodeNumber: 1, name: 'Pilot', overview: '', stillPath: '',
+  runtimeMins: 58, communityRating: 0, airDate: '2008-01-20', syncedAt: new Date().toISOString(),
+})
+
+// resolveJellyfinUser creates the jellyfin_tokens table on its first read, so this
+// lookup of a token that cannot exist gives the inserts below a table to target.
+resolveJellyfinUser({ 'x-emby-token': 'no-such-token' })
+function issueToken(userId: string): string {
+  const token = randomUUID()
+  db.getDb()
+    .prepare(`INSERT INTO jellyfin_tokens (token, user_id, expires_at) VALUES (?, ?, ?)`)
+    .run(token, userId, Date.now() + 3_600_000)
+  return token
+}
+const tokens = { admin: issueToken(admin.id), romanian: issueToken(romanian.id), german: issueToken(german.id) }
+
+const TRACKS: SubtitleTrack[] = [
+  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt' },
+  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt' },
+  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt' },
+]
+
+// The router options src/index.ts:38-43 builds, so the tests measure what is deployed.
+const PRODUCTION_ROUTER_OPTIONS = {
+  routerOptions: { ignoreTrailingSlash: true },
+  rewriteUrl: (req: { url?: string }) => req.url!.replace(/\/\/+/g, '/').replace(/\.view(\?|$)/, '$1'),
+}
+
+type Lookup = (mediaType: StremioMediaType, externalId: string) => Promise<SubtitleTrack[]>
+const lookups: Array<[string, string]> = []
+const recording: Lookup = async (mediaType, externalId) => {
+  lookups.push([mediaType, externalId])
+  return TRACKS
+}
+
+async function playbackInfo(lookupSubtitles: Lookup | undefined, token: string, itemId: string) {
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, (lookupSubtitles ? { lookupSubtitles } : {}) as never)
+  const res = await app.inject({ method: 'GET', url: `/Items/${itemId}/PlaybackInfo`, headers: { 'x-emby-token': token } })
+  await app.close()
+  assert.equal(res.statusCode, 200, res.body)
+  const source = (res.json().MediaSources as Array<Record<string, unknown>>)[0]
+  return { source, streams: source.MediaStreams as Array<Record<string, unknown>> }
+}
+
+test('a movie play offers every subtitle after the video and audio streams', async () => {
+  lookups.length = 0
+  const { source, streams } = await playbackInfo(recording, tokens.admin, MOVIE_ITEM)
+  assert.deepEqual(lookups, [['movie', 'tt0111161']])
+  assert.deepEqual(streams.map(stream => stream.Type), ['Video', 'Audio', 'Subtitle', 'Subtitle', 'Subtitle'])
+  assert.deepEqual(streams.slice(2).map(stream => [stream.Index, stream.Language, stream.DeliveryUrl, stream.DeliveryMethod, stream.IsDefault]), [
+    [2, 'eng', 'https://subs.example/a', 'External', false],
+    [3, 'eng', 'https://subs.example/b', 'External', false],
+    [4, 'rum', 'https://subs.example/c.vtt', 'External', false],
+  ])
+  assert.equal('DefaultSubtitleStreamIndex' in source, false)
+})
+
+test('an account with a preferred language gets its first track selected', async () => {
+  const { source, streams } = await playbackInfo(recording, tokens.romanian, MOVIE_ITEM)
+  assert.equal(source.DefaultSubtitleStreamIndex, 4)
+  assert.deepEqual(streams.slice(2).map(stream => stream.IsDefault), [false, false, true])
+})
+
+test('a preference with no matching track selects nothing and still offers the rest', async () => {
+  const { source, streams } = await playbackInfo(recording, tokens.german, MOVIE_ITEM)
+  assert.equal('DefaultSubtitleStreamIndex' in source, false)
+  assert.equal(streams.filter(stream => stream.Type === 'Subtitle').length, 3)
+  assert.ok(streams.every(stream => stream.Type !== 'Subtitle' || stream.IsDefault === false))
+})
+
+test('an episode play looks its subtitles up by the episode id', async () => {
+  lookups.length = 0
+  const { streams } = await playbackInfo(recording, tokens.admin, EPISODE_ITEM)
+  assert.deepEqual(lookups, [['series', 'tt0903747:1:1']])
+  assert.equal(streams.filter(stream => stream.Type === 'Subtitle').length, 3)
+})
+
+test('a failing lookup leaves the play exactly as it was', async () => {
+  const baseline = await playbackInfo(undefined, tokens.admin, MOVIE_ITEM)
+  assert.equal(baseline.streams.length, 2)
+  const rejecting: Lookup = async () => { throw new Error('provider exploded') }
+  const throwing = (() => { throw new Error('thrown before any promise') }) as unknown as Lookup
+  for (const lookup of [rejecting, throwing]) {
+    const { source, streams } = await playbackInfo(lookup, tokens.romanian, MOVIE_ITEM)
+    assert.deepEqual(streams, baseline.streams)
+    assert.equal('DefaultSubtitleStreamIndex' in source, false)
+  }
+})
+
+test('a title with no subtitles is served as before', async () => {
+  const baseline = await playbackInfo(undefined, tokens.admin, MOVIE_ITEM)
+  const { source, streams } = await playbackInfo(async () => [], tokens.romanian, MOVIE_ITEM)
+  assert.deepEqual(streams, baseline.streams)
+  assert.equal('DefaultSubtitleStreamIndex' in source, false)
+})

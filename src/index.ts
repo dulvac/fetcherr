@@ -12,6 +12,7 @@ import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatch
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
 import { syncAllDiscoverCategories, removeAllDiscoverSourceItems } from './discover.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchCinemetaMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
+import { fetchSubtitles } from './subtitles.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
@@ -1994,9 +1995,13 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   }
 })
 
-await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
-await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
-await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
+// Every Jellyfin surface gets subtitles, /search included, because it answers
+// PlaybackInfo for search results too.
+const lookupSubtitles = (mediaType: StremioMediaType, externalId: string) => fetchSubtitles(mediaType, externalId)
+
+await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
+await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
+await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
 await app.register(uiRoutes)
 // One surface, one prefix: no /emby-style alias registration for the addon. The
 // plugin derives its own route paths and its token redaction from app.prefix, so

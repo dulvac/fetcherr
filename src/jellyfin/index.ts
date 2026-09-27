@@ -24,6 +24,8 @@ import type { Movie, Show, Season, Episode } from '../db.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
+import { attachSubtitleStreams, parsePlayPath } from '../subtitle-streams.js'
+import type { SubtitleTrack } from '../subtitles.js'
 import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
 import {
   canUserAccessStremioMeta,
@@ -161,6 +163,9 @@ type JellyfinRouteOptions = {
     runtimeTicks: number
     playbackClient: string
   }) => Promise<Array<Record<string, unknown>>>
+  // Subtitles for a play, looked up by the ids the stream providers use. Optional,
+  // so a registration without it serves the media sources it always served.
+  lookupSubtitles?: (mediaType: StremioMediaType, externalId: string) => Promise<SubtitleTrack[]>
 }
 type ImageKind = 'poster' | 'backdrop' | 'logo' | 'profile'
 type ImageQuery = {
@@ -3816,6 +3821,23 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   app.post('/UserPlayedItems/:itemId', async (req, reply) => handleMarkPlayed(req as never, reply as never))
   app.delete('/UserPlayedItems/:itemId', async (req, reply) => handleMarkUnplayed(req as never, reply as never))
 
+  // Started as soon as a play path is known and awaited once the media sources are
+  // built, so a slow provider overlaps the stream lookup instead of adding to it.
+  // Never rejects: subtitles are additive, and a failure must leave the play as it
+  // would have been without them. Promise.resolve().then also catches a lookup
+  // that throws before it returns a promise.
+  function subtitlesFor(playPath: string): Promise<SubtitleTrack[]> {
+    const key = parsePlayPath(playPath)
+    const lookup = opts.lookupSubtitles
+    if (!key || !lookup) return Promise.resolve([])
+    return Promise.resolve()
+      .then(() => lookup(key.mediaType, key.externalId))
+      .catch(err => {
+        app.log.warn(`playback: subtitle lookup failed for ${playPath}: ${err}`)
+        return []
+      })
+  }
+
   // Playback — handles both movies and episodes
   async function handlePlaybackInfo(
     req: { params: { id: string }; headers: Record<string, string> },
@@ -3838,7 +3860,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
       const runtimeTicks = stremioRuntimeTicks(episode, 45)
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
+      const subtitles = subtitlesFor(playPath)
+      const baseSources = config.mediaSourceSelection
         ? await playbackMediaSourcesFor(opts, {
             itemId: id,
             sourceId: id,
@@ -3849,6 +3872,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: Stremio "${name}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -3871,7 +3895,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const name = stremioMetaName(meta)
       const runtimeTicks = stremioRuntimeTicks(meta, 90)
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
+      const subtitles = subtitlesFor(playPath)
+      const baseSources = config.mediaSourceSelection
         ? await playbackMediaSourcesFor(opts, {
             itemId: id,
             sourceId,
@@ -3882,6 +3907,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(sourceId, name, playUrl, runtimeTicks)]
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: Stremio "${name}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -3915,7 +3941,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const name = `${show.title} - ${label}`
       const runtimeTicks = (ep?.runtimeMins || 45) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
+      const subtitles = subtitlesFor(playPath)
+      const baseSources = config.mediaSourceSelection
         ? await playbackMediaSourcesFor(opts, {
             itemId: id,
             sourceId: id,
@@ -3926,6 +3953,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: "${show.title}" ${label} → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -3950,7 +3978,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
       const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = config.mediaSourceSelection
+      const subtitles = subtitlesFor(playPath)
+      const baseSources = config.mediaSourceSelection
         ? await playbackMediaSourcesFor(opts, {
             itemId: id,
             sourceId: id,
@@ -3961,6 +3990,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: "${movie.title}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -3985,7 +4015,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
     const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
     const playbackClient = playbackClientFromHeaders(req.headers)
-    const mediaSources = config.mediaSourceSelection
+    const subtitles = subtitlesFor(playPath)
+    const baseSources = config.mediaSourceSelection
       ? await playbackMediaSourcesFor(opts, {
           itemId: id,
           sourceId: id,
@@ -3996,6 +4027,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           playbackClient,
         })
       : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
     app.log.info(`playback: "${movie.title}" → ${playUrl}`)
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)
