@@ -3876,11 +3876,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: Stremio "${name}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, name)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3911,11 +3911,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(sourceId, name, playUrl, runtimeTicks)]
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: Stremio "${name}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, name)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3957,11 +3957,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, name, playUrl, runtimeTicks)]
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: "${show.title}" ${label} → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3994,11 +3994,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
             playbackClient,
           })
         : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       app.log.info(`playback: "${movie.title}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, movie.title)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -4031,11 +4031,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           playbackClient,
         })
       : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
-    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
     app.log.info(`playback: "${movie.title}" → ${playUrl}`)
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)
     opts.prewarmPlayback?.(playPath, movie.title)
+    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage)
     return {
       MediaSources: mediaSources,
       AlternateMediaSources: mediaSources,
