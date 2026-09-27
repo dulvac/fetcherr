@@ -2044,6 +2044,7 @@ await app.register(stremioAddonRoutes, {
   // metadata lookup at stream providers that serve no metas, failing the gate
   // closed for every rating-limited account.
   fetchMeta: (mediaType, imdbId) => fetchCinemetaMeta(mediaType, imdbId),
+  fetchSubtitles: (mediaType, externalId, extra) => fetchSubtitles(mediaType, externalId, extra),
 })
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
