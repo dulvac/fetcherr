@@ -4,6 +4,7 @@ import Fastify from 'fastify'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:http'
 import type { StremioMediaType } from '../src/sootio.js'
 import type { SubtitleTrack } from '../src/subtitles.js'
 
@@ -20,6 +21,7 @@ process.env.TVDB_API_KEY = ''
 const db = await import('../src/db.js')
 const { config } = await import('../src/config.js')
 const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/index.js')
+const { fetchSubtitleFile } = await import('../src/subtitles.js')
 
 // The item ids jellyfin/index.ts derives: a movie carries its tmdb id in the low
 // bits, an episode carries show, season and episode.
@@ -104,9 +106,9 @@ test('a movie play offers every subtitle after the video and audio streams', asy
   assert.deepEqual(lookups, [['movie', 'tt0111161']])
   assert.deepEqual(streams.map(stream => stream.Type), ['Video', 'Audio', 'Subtitle', 'Subtitle', 'Subtitle'])
   assert.deepEqual(streams.slice(2).map(stream => [stream.Index, stream.Language, stream.DeliveryUrl, stream.DeliveryMethod, stream.IsDefault]), [
-    [2, 'eng', 'https://subs.example/a', 'External', false],
-    [3, 'eng', 'https://subs.example/b', 'External', false],
-    [4, 'rum', 'https://subs.example/c.vtt', 'External', false],
+    [2, 'eng', `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt`, 'External', false],
+    [3, 'eng', `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/3/0/Stream.srt`, 'External', false],
+    [4, 'rum', `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/4/0/Stream.vtt`, 'External', false],
   ])
   assert.equal('DefaultSubtitleStreamIndex' in source, false)
 })
@@ -186,60 +188,86 @@ test('with media source selection on, every offered version carries the subtitle
   }
 })
 
-async function appWithSubtitles() {
+async function startFileHost() {
+  const hits: string[] = []
+  const server = createServer((req, res) => {
+    hits.push(req.url ?? '')
+    if (req.url?.startsWith('/fail')) { res.writeHead(500); res.end(); return }
+    if (req.url?.startsWith('/slow')) return // never answers
+    if (req.url?.startsWith('/huge')) { res.writeHead(200, { 'content-length': String(6 * 1024 * 1024) }); res.end(); return }
+    res.writeHead(200, { 'content-type': 'application/x-subrip; charset=utf-8' })
+    res.end(`1\n00:00:01,000 --> 00:00:02,000\nfile ${req.url}\n`)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  return { base: `http://127.0.0.1:${port}`, hits, close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }) }
+}
+
+async function appServingFiles(base: string) {
+  const tracks: SubtitleTrack[] = [
+    { id: '1-a', url: `${base}/a.srt`, lang: 'eng', label: 'English 1', format: 'srt' },
+    { id: '1-b', url: `${base}/b.srt`, lang: 'eng', label: 'English 2', format: 'srt' },
+    { id: '1-c', url: `${base}/c.vtt`, lang: 'rum', label: 'Romanian', format: 'vtt' },
+    { id: '1-d', url: `${base}/fail.srt`, lang: 'ger', label: 'German', format: 'srt' },
+  ]
   const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
-  await app.register(jellyfinRoutes, { lookupSubtitles: recording } as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: async () => tracks, fetchSubtitleFile } as never)
   return app
 }
 
-test('a client fetching a subtitle by stream index is sent to that track\'s file', async () => {
-  const app = await appWithSubtitles()
+test('a client fetching a subtitle at its DeliveryUrl gets the file from this server', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const app = await appServingFiles(host.base)
   const info = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
   const source = (info.json().MediaSources as Array<Record<string, unknown>>)[0]
   const subtitleStreams = (source.MediaStreams as Array<Record<string, unknown>>).filter(stream => stream.Type === 'Subtitle')
-  assert.equal(subtitleStreams.length, 3)
-  for (const stream of subtitleStreams) {
-    for (const path of [
-      `/Videos/${MOVIE_ITEM}/${source.Id}/Subtitles/${stream.Index}/0/Stream.${stream.Codec}`,
-      `/Videos/${MOVIE_ITEM}/${source.Id}/Subtitles/${stream.Index}/Stream.${stream.Codec}`,
-      `/videos/${MOVIE_ITEM}/${source.Id}:candidate:${'a'.repeat(32)}/Subtitles/${stream.Index}/0/Stream.${stream.Codec}`,
-    ]) {
-      // No token, as the players in the production log sent none: the source id
-      // naming the item is what lets it through.
-      const res = await app.inject({ method: 'GET', url: path })
-      assert.equal(res.statusCode, 302, path)
-      assert.equal(res.headers.location, stream.DeliveryUrl, path)
-    }
+  for (const [n, stream] of subtitleStreams.slice(0, 3).entries()) {
+    assert.equal(stream.IsExternalUrl, false)
+    // No token, as the players in the production log sent none.
+    const res = await app.inject({ method: 'GET', url: String(stream.DeliveryUrl) })
+    assert.equal(res.statusCode, 200, String(stream.DeliveryUrl))
+    assert.equal(res.headers['content-type'], n === 2 ? 'text/vtt; charset=utf-8' : 'application/x-subrip; charset=utf-8')
+    assert.match(res.body, new RegExp(`file /${['a.srt', 'b.srt', 'c.vtt'][n]}`))
   }
+  // The other spellings players use reach the same file, from memory.
+  for (const path of [
+    `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/Stream.srt`,
+    `/videos/${MOVIE_ITEM}/${MOVIE_ITEM}:candidate:${'a'.repeat(32)}/Subtitles/2/0/Stream.srt`,
+  ]) {
+    const res = await app.inject({ method: 'GET', url: path })
+    assert.equal(res.statusCode, 200, path)
+  }
+  assert.equal(host.hits.filter(hit => hit === '/a.srt').length, 1)
   await app.close()
 })
 
-test('a subtitle fetch works without a prior PlaybackInfo, as after a restart', async () => {
-  const app = await appWithSubtitles()
-  const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt` })
+test('a subtitle fetch works without a prior PlaybackInfo, as after a restart', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const app = await appServingFiles(host.base)
+  const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/3/0/Stream.srt` })
   await app.close()
-  assert.equal(res.statusCode, 302)
-  assert.equal(res.headers.location, 'https://subs.example/a')
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /file \/b\.srt/)
 })
 
-test('a subtitle fetch the server cannot place, or the account may not see, is refused', async () => {
-  const app = await appWithSubtitles()
-  for (const index of ['0', '1', '5', '99', '-1', 'abc']) {
+test('a subtitle fetch the server cannot place, cannot get, or the account may not see is refused', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const app = await appServingFiles(host.base)
+  for (const index of ['0', '1', '6', '99', '-1', 'abc']) {
     const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/${index}/0/Stream.srt` })
     assert.equal(res.statusCode, 404, `index ${index}`)
   }
-  // An item that resolves to nothing.
+  // The provider's file host fails for the German track.
+  const unavailable = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/5/0/Stream.srt` })
+  assert.equal(unavailable.statusCode, 404)
   const unknownItem = `00000000-0000-4000-8000-${(999999).toString(16).padStart(12, '0')}`
-  const unknown = await app.inject({ method: 'GET', url: `/Videos/${unknownItem}/${unknownItem}/Subtitles/2/0/Stream.srt` })
-  assert.equal(unknown.statusCode, 404)
-  // A rating-limited account cannot reach the R-rated movie's subtitles, even
-  // with a source id that names the item: its own token decides.
+  assert.equal((await app.inject({ method: 'GET', url: `/Videos/${unknownItem}/${unknownItem}/Subtitles/2/0/Stream.srt` })).statusCode, 404)
   const limited = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.kid } })
   assert.equal(limited.statusCode, 404)
-  // A source id that does not name the item needs a signed-in account.
-  const stranger = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt` })
-  assert.equal(stranger.statusCode, 401)
-  const signedIn = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.admin } })
-  assert.equal(signedIn.statusCode, 302)
+  assert.equal((await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt` })).statusCode, 401)
+  assert.equal((await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.admin } })).statusCode, 200)
   await app.close()
 })

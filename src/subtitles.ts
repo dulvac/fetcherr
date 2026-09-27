@@ -216,3 +216,44 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
   }
   return tracks
 }
+
+export interface SubtitleFile {
+  body: Buffer
+  // The provider's Content-Type header, or null when it sent none.
+  contentType: string | null
+}
+
+const FILE_TTL_MS = 10 * 60 * 1000
+const FILE_CACHE_MAX = 200
+const FILE_MAX_BYTES = 5 * 1024 * 1024
+const fileCache = new Map<string, { file: SubtitleFile; expiresAt: number }>()
+
+// Jellyfin players fetch subtitles from their own server and follow neither an
+// absolute DeliveryUrl nor a redirect, so the file comes through here. Kept
+// briefly, because a player fetches every track at play start and again on each
+// replay. Never rejects: a file that cannot be had is null, and the player
+// simply lacks that track.
+export async function fetchSubtitleFile(url: string): Promise<SubtitleFile | null> {
+  const now = Date.now()
+  const cached = fileCache.get(url)
+  if (cached && cached.expiresAt > now) return cached.file
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(config.subtitleTimeoutMs) })
+    if (!res.ok) return null
+    if (Number(res.headers.get('content-length') ?? 0) > FILE_MAX_BYTES) return null
+    const body = Buffer.from(await res.arrayBuffer())
+    if (body.length > FILE_MAX_BYTES) return null
+    const file: SubtitleFile = { body, contentType: res.headers.get('content-type') }
+    for (const [key, entry] of fileCache) {
+      if (entry.expiresAt <= now) fileCache.delete(key)
+    }
+    if (fileCache.size >= FILE_CACHE_MAX) {
+      const oldest = fileCache.keys().next().value
+      if (oldest !== undefined) fileCache.delete(oldest)
+    }
+    fileCache.set(url, { file, expiresAt: now + FILE_TTL_MS })
+    return file
+  } catch {
+    return null
+  }
+}

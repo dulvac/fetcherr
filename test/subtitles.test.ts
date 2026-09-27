@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { config } from '../src/config.js'
-import { clearSubtitleCache, fetchSubtitles } from '../src/subtitles.js'
+import { clearSubtitleCache, fetchSubtitleFile, fetchSubtitles } from '../src/subtitles.js'
 import { startFakeSubtitleProvider } from './fake-subtitle-provider.js'
 
 const sub = (id: string, lang: string) => ({ id, lang, url: `https://subs.example/file/${id}` })
@@ -296,4 +297,43 @@ test('.sub files are not offered and do not use up the cap', async t => {
   configure({ subtitleProviderUrls: [provider.url], subtitleMaxPerLanguage: 1 })
 
   assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-srt'])
+})
+
+async function startFileHost() {
+  const hits: string[] = []
+  const server = createServer((req, res) => {
+    hits.push(req.url ?? '')
+    if (req.url?.startsWith('/fail')) { res.writeHead(500); res.end(); return }
+    if (req.url?.startsWith('/slow')) return // never answers
+    if (req.url?.startsWith('/huge')) { res.writeHead(200, { 'content-length': String(6 * 1024 * 1024) }); res.end(); return }
+    res.writeHead(200, { 'content-type': 'application/x-subrip; charset=utf-8' })
+    res.end(`1\n00:00:01,000 --> 00:00:02,000\nfile ${req.url}\n`)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  return { base: `http://127.0.0.1:${port}`, hits, close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }) }
+}
+
+test('a subtitle file is fetched once and then served from memory', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  configure()
+  const first = await fetchSubtitleFile(`${host.base}/a.srt`)
+  const second = await fetchSubtitleFile(`${host.base}/a.srt`)
+  assert.equal(first?.body.toString(), '1\n00:00:01,000 --> 00:00:02,000\nfile /a.srt\n')
+  assert.equal(first?.contentType, 'application/x-subrip; charset=utf-8')
+  assert.equal(second, first)
+  assert.deepEqual(host.hits, ['/a.srt'])
+})
+
+test('a subtitle file that fails, hangs or is too large is null, not an error', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  configure({ subtitleTimeoutMs: 300 })
+  assert.equal(await fetchSubtitleFile(`${host.base}/fail.srt`), null)
+  const started = performance.now()
+  assert.equal(await fetchSubtitleFile(`${host.base}/slow.srt`), null)
+  assert.ok(performance.now() - started < 2000)
+  assert.equal(await fetchSubtitleFile(`${host.base}/huge.srt`), null)
+  assert.equal(await fetchSubtitleFile('not a url'), null)
 })
