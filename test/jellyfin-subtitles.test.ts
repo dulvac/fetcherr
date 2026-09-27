@@ -18,6 +18,7 @@ process.env.TMDB_API_KEY = ''
 process.env.TVDB_API_KEY = ''
 
 const db = await import('../src/db.js')
+const { config } = await import('../src/config.js')
 const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/index.js')
 
 // The item ids jellyfin/index.ts derives: a movie carries its tmdb id in the low
@@ -40,6 +41,9 @@ db.upsertMovie({
   officialRating: 'R', communityRating: 0, studiosJson: '[]', tagsJson: '[]', castJson: '[]',
   releaseDate: '1994-09-23', digitalReleaseDate: '1994-09-23', syncedAt: new Date().toISOString(),
 })
+// The item-detail route (unlike PlaybackInfo) only serves a movie that hasAnySourceItem
+// confirms is actually in the library.
+db.addSourceItem('manual:test', 'movie', MOVIE_TMDB)
 db.upsertShow({
   tmdbId: SHOW_TMDB, imdbId: 'tt0903747', tvdbId: 81189, mediaLanguage: 'en', title: 'Breaking Bad', year: 2008,
   overview: '', posterPath: '', backdropPath: '', logoPath: '', genres: '[]', status: 'Ended', numSeasons: 5,
@@ -142,4 +146,40 @@ test('a title with no subtitles is served as before', async () => {
   const { source, streams } = await playbackInfo(async () => [], tokens.romanian, MOVIE_ITEM)
   assert.deepEqual(streams, baseline.streams)
   assert.equal('DefaultSubtitleStreamIndex' in source, false)
+})
+
+test('the item detail screen offers the same tracks, with the account\'s default', async () => {
+  lookups.length = 0
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: recording } as never)
+  const res = await app.inject({ method: 'GET', url: `/Users/${romanian.id}/Items/${MOVIE_ITEM}`, headers: { 'x-emby-token': tokens.romanian } })
+  await app.close()
+  assert.equal(res.statusCode, 200, res.body)
+  const source = (res.json().MediaSources as Array<Record<string, unknown>>)[0]
+  const streams = source.MediaStreams as Array<Record<string, unknown>>
+  assert.deepEqual(lookups, [['movie', 'tt0111161']])
+  assert.equal(streams.filter(stream => stream.Type === 'Subtitle').length, 3)
+  assert.equal(source.DefaultSubtitleStreamIndex, 4)
+})
+
+test('with media source selection on, every offered version carries the subtitles', async t => {
+  const before = config.mediaSourceSelection
+  config.mediaSourceSelection = true
+  t.after(() => { config.mediaSourceSelection = before })
+  const versions = async () => [
+    { Id: 'v1', MediaStreams: [{ Type: 'Video', Index: 0 }, { Type: 'Audio', Index: 1 }] },
+    { Id: 'v2', MediaStreams: [{ Type: 'Video', Index: 0 }, { Type: 'Audio', Index: 1 }] },
+  ]
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: recording, buildPlaybackMediaSources: versions } as never)
+  const res = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.romanian } })
+  await app.close()
+  assert.equal(res.statusCode, 200, res.body)
+  const sources = res.json().MediaSources as Array<Record<string, unknown>>
+  assert.deepEqual(sources.map(source => source.Id), ['v1', 'v2'])
+  for (const source of sources) {
+    const streams = source.MediaStreams as Array<Record<string, unknown>>
+    assert.deepEqual(streams.map(stream => stream.Index), [0, 1, 2, 3, 4])
+    assert.equal(source.DefaultSubtitleStreamIndex, 4)
+  }
 })
