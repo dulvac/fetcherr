@@ -26,7 +26,9 @@ import {
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
-import { collectStreamProviderUrls, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, serializeFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseStremioSearchSource, parseTraktLists, type ListPresentation } from '../config.js'
+import { collectStreamProviderUrls, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, serializeFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseStremioSearchSource, parseSubtitleMaxPerLanguage, parseTraktLists, type ListPresentation } from '../config.js'
+import { parseSubtitleLanguages, subtitlePreferenceOptions } from '../subtitle-lang.js'
+import { clearSubtitleCache } from '../subtitles.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries } from '../mdblist.js'
@@ -816,6 +818,10 @@ export async function uiRoutes(app: FastifyInstance) {
       stremioSearchSource: config.stremioSearchSource,
       mediaSourceSelection: config.mediaSourceSelection,
       mediaSourceLimit: config.mediaSourceLimit,
+      subtitleProviderUrls: config.subtitleProviderUrls.join('\n'),
+      subtitleLanguages: config.subtitleLanguages.join(', '),
+      subtitleMaxPerLanguage: config.subtitleMaxPerLanguage,
+      subtitleLanguageOptions: subtitlePreferenceOptions(config.subtitleLanguages),
       serverUrl:         config.serverUrl,
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
@@ -914,6 +920,16 @@ export async function uiRoutes(app: FastifyInstance) {
     const user = currentUiUser(req as never)
     if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as Record<string, string | string[] | boolean>
+    // Checked before anything below persists, so a typo in the language list
+    // cannot leave half the form saved.
+    let subtitleLanguages: string[] | null = null
+    if (typeof body.subtitleLanguages === 'string') {
+      const parsed = parseSubtitleLanguages(body.subtitleLanguages)
+      if (parsed.unknown.length) {
+        return reply.code(400).send({ error: `Unknown subtitle language: ${parsed.unknown.join(', ')}` })
+      }
+      subtitleLanguages = parsed.languages
+    }
     const editable: (keyof typeof config)[] = [
       'sootioUrl', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret', 'mdblistApiKey',
     ]
@@ -981,6 +997,23 @@ export async function uiRoutes(app: FastifyInstance) {
       setSetting('mediaSourceLimit', String(limit))
       config.mediaSourceLimit = limit
     }
+    if (typeof body.subtitleProviderUrls === 'string') {
+      const urls = parseStreamProviderUrls(body.subtitleProviderUrls)
+      setSetting('subtitleProviderUrls', urls.join('\n'))
+      config.subtitleProviderUrls = urls
+    }
+    if (subtitleLanguages !== null) {
+      setSetting('subtitleLanguages', subtitleLanguages.join(','))
+      config.subtitleLanguages = subtitleLanguages
+    }
+    if (body.subtitleMaxPerLanguage != null) {
+      const cap = parseSubtitleMaxPerLanguage(String(body.subtitleMaxPerLanguage))
+      setSetting('subtitleMaxPerLanguage', String(cap))
+      config.subtitleMaxPerLanguage = cap
+    }
+    // On every save, not only when a subtitle field changed: with no subtitle
+    // providers named, the stream providers saved above are the subtitle source.
+    clearSubtitleCache()
     if (typeof body.preferredAudioLanguage === 'string') {
       const language = parseAudioLanguage(body.preferredAudioLanguage)
       setSetting('preferredAudioLanguage', language)

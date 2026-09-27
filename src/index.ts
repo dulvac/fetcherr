@@ -1,7 +1,7 @@
 import Fastify from 'fastify'
 import { parseTorrentTitle, type ParsedResult as ParsedTorrentTitleResult } from '@viren070/parse-torrent-title'
 import { createHash } from 'node:crypto'
-import { collectStreamProviderUrls, config, isListPresentationEnabled, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists, parseTraktListModes, parseStremioSearchSource } from './config.js'
+import { collectStreamProviderUrls, config, isListPresentationEnabled, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists, parseTraktListModes, parseStremioSearchSource, parseSubtitleLanguageSetting, parseSubtitleMaxPerLanguage } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
@@ -114,6 +114,9 @@ getDb()
   if (s.stremioSearchSource != null) config.stremioSearchSource = parseStremioSearchSource(s.stremioSearchSource)
   if (s.mediaSourceSelection != null) config.mediaSourceSelection = parseBooleanSetting(s.mediaSourceSelection, false)
   if (s.mediaSourceLimit != null) config.mediaSourceLimit = parseMediaSourceLimit(s.mediaSourceLimit)
+  if (s.subtitleProviderUrls != null) config.subtitleProviderUrls = parseStreamProviderUrls(s.subtitleProviderUrls)
+  if (s.subtitleLanguages != null) config.subtitleLanguages = parseSubtitleLanguageSetting(s.subtitleLanguages)
+  if (s.subtitleMaxPerLanguage != null) config.subtitleMaxPerLanguage = parseSubtitleMaxPerLanguage(s.subtitleMaxPerLanguage)
   // Only fall back to env-var URLs if user has never saved add-ons via the UI.
   // Once s.streamProviderUrls is set (even to ''), DB is authoritative and env var
   // should not re-add URLs the user explicitly removed.
