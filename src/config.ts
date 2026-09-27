@@ -283,7 +283,11 @@ export function parsePositiveIntegerSetting(value: string | undefined, fallback:
 // empty, which means no language filter at all, so the two must stay distinct.
 export function parseSubtitleLanguageSetting(value: string | undefined): string[] {
   if (value == null) return [...DEFAULT_SUBTITLE_LANGUAGES]
-  return parseSubtitleLanguages(value).languages
+  const { languages, unknown } = parseSubtitleLanguages(value)
+  // Settings refuses these outright. A value from the environment or written
+  // straight to the database has no one to refuse it, so say what was ignored.
+  if (unknown.length) console.warn(`subtitles: ignoring unknown subtitle language(s): ${unknown.join(', ')}`)
+  return languages
 }
 
 // Without a cap a popular title yields over a hundred tracks.

@@ -78,3 +78,10 @@ test('display names and the choices for an account preference', () => {
   // With no language filter any language can arrive, so every known one is a choice.
   assert.equal(subtitlePreferenceOptions([]).length, SUBTITLE_LANGUAGES.length)
 })
+
+test('an unknown language in a stored or env value is ignored and reported', t => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  assert.deepEqual(parseSubtitleLanguageSetting('en, dk'), ['eng'])
+  assert.equal(warn.mock.calls.length, 1)
+  assert.match(String(warn.mock.calls[0].arguments[0]), /\bdk\b/)
+})
