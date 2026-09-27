@@ -26,6 +26,7 @@ import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
 import { attachSubtitleStreams, parsePlayPath, subtitleTrackAtIndex } from '../subtitle-streams.js'
 import type { SubtitleTrack } from '../subtitles.js'
+import { rankSearchResults } from '../search-rank.js'
 import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
 import {
   canUserAccessStremioMeta,
@@ -2114,7 +2115,7 @@ async function buildSearchResultItems(
   }
 
   return {
-    Items: pagedItems(combined, offset, limit),
+    Items: pagedItems(rankSearchResults(combined, searchTerm), offset, limit),
     TotalRecordCount: combined.length,
     StartIndex: offset,
   }
