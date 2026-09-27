@@ -51,7 +51,8 @@ interface StremioCatalog {
   extra?: Array<{ name?: string; isRequired?: boolean }>
 }
 
-interface StremioManifest {
+export interface StremioManifest {
+  resources?: Array<string | { name?: string; types?: string[]; idPrefixes?: string[] }>
   catalogs?: StremioCatalog[]
 }
 
@@ -450,7 +451,7 @@ function rankStreamScores(streams: Stream[], ctx: StreamRankContext = {}): Ranke
 
 const CINEMETA_BASE = 'https://v3-cinemeta.strem.io'
 
-function providerBases(): string[] {
+export function providerBases(): string[] {
   const urls = [...config.streamProviderUrls]
   if (config.sootioUrl) urls.push(config.sootioUrl)
   return [...new Set(urls)]
@@ -471,7 +472,7 @@ function isSensitivePathSegment(segment: string): boolean {
     || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)
 }
 
-function providerLabel(base: string, idx: number): string {
+export function providerLabel(base: string, idx: number): string {
   try {
     const parsed = new URL(base)
     const path = parsed.pathname
@@ -502,7 +503,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 const manifestCache = new Map<string, { expiresAt: number; value: StremioManifest | null }>()
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000
 
-async function fetchManifest(base: string): Promise<StremioManifest | null> {
+export async function fetchManifest(base: string): Promise<StremioManifest | null> {
   const cached = manifestCache.get(base)
   if (cached && cached.expiresAt > Date.now()) return cached.value
 
