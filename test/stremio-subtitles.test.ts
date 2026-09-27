@@ -142,9 +142,36 @@ test('HEAD is answered, since a lookup has no side effects', async () => {
   assert.equal(res.statusCode, 200)
 })
 
+test('a real client\'s long extra segment reaches the route and never logs the token', async () => {
+  calls.length = 0
+  const filename = 'The.Shawshank.Redemption.1994.REMASTERED.1080p.BluRay.x265.10bit.AAC.5.1-Tigole [Criterion Collection].mkv'
+  const segment = `videoHash=8e245d9679d31e12&videoSize=652696576&filename=${encodeURIComponent(filename)}.json`
+  assert.ok(segment.length > 150, `segment is only ${segment.length} characters`)
+
+  const lines: string[] = []
+  const app = Fastify({ ...PRODUCTION_ROUTER_OPTIONS, logger: { level: 'info', stream: { write: (line: string) => { lines.push(line) } } } } as never)
+  await app.register(stremioAddonRoutes, {
+    fetchStreams: async () => [],
+    resolvePlayback: async () => ({ url: 'https://cdn.torbox.test/file.mkv' }),
+    fetchMeta: async () => ({ id: 'tt0111161', name: 'Shawshank' }),
+    fetchSubtitles: recording,
+  } as never)
+  const res = await app.inject({ method: 'GET', url: `/stremio/${friend.token}/subtitles/movie/tt0111161/${segment}` })
+  const multi = await app.inject({ method: 'GET', url: `/stremio/${friend.token}/subtitles/movie/tt0111161/a/${segment}` })
+  await app.close()
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(calls, [['movie', 'tt0111161', { videoHash: '8e245d9679d31e12', videoSize: '652696576', filename }]])
+  assert.deepEqual(multi.json(), { subtitles: [] })
+  assert.ok(lines.length > 0, 'the plugin logs one redacted line per request')
+  assert.ok(!lines.some(line => line.includes(friend.token)), 'a log line carries the full token')
+})
+
 test('the provider receives the hash and size the client sent', async t => {
   const provider = await startFakeSubtitleProvider({ subtitles: [{ id: 'x', lang: 'eng', url: 'https://subs.example/x' }] })
   t.after(() => provider.close())
+  const before = { subtitleProviderUrls: config.subtitleProviderUrls, subtitleLanguages: config.subtitleLanguages, subtitleTimeoutMs: config.subtitleTimeoutMs }
+  t.after(() => { Object.assign(config, before) })
   Object.assign(config, { subtitleProviderUrls: [provider.url], subtitleLanguages: ['eng'], subtitleTimeoutMs: 2000 })
   clearSubtitleCache()
 

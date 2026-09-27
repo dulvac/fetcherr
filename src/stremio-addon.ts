@@ -173,11 +173,12 @@ export function orderPreferredFirst<T extends { lang: string }>(tracks: T[], pre
   return [...tracks.filter(track => track.lang === preferred), ...tracks.filter(track => track.lang !== preferred)]
 }
 
-// The last path segment exactly as the client sent it. Fastify decodes route
-// params, which would turn a %26 inside a filename into a separator.
-function rawLastSegment(url: string): string {
-  const path = url.split('?')[0]
-  return path.slice(path.lastIndexOf('/') + 1)
+// The raw path segments after /stremio/:token/subtitles/:mediaType/:id, however
+// the plugin is mounted. Raw, because Fastify decodes route params, which would
+// turn a %26 inside a filename into a separator.
+function rawSegmentsAfterSubtitleId(url: string, mountPath: string): string[] {
+  const segments = url.split('?')[0].split('/').filter(Boolean)
+  return segments.slice(mountPath.split('/').filter(Boolean).length + 5)
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
@@ -365,9 +366,15 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     return answerSubtitles(req, reply, id, null)
   })
 
-  app.get(`${STREMIO_ROUTE_PREFIX}/:token/subtitles/:mediaType/:id/:extra`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
+  // A wildcard, not a :param: find-my-way caps a param at 100 characters, and a
+  // real client's extra (hash, size and a release filename) runs past that. Over
+  // the cap a request skips the catch-all above and reaches the root not-found
+  // handler, which logs the whole token. The extra is one segment; anything with
+  // more is not a request this route understands, so it gets the empty list.
+  app.get(`${STREMIO_ROUTE_PREFIX}/:token/subtitles/:mediaType/:id/*`, SILENCE_DEFAULT_REQUEST_LOG, async (req, reply) => {
     const { id } = req.params as { id: string }
-    return answerSubtitles(req, reply, `${id}.json`, rawLastSegment(req.url))
+    const extra = rawSegmentsAfterSubtitleId(req.url, mountPath)
+    return answerSubtitles(req, reply, `${id}.json`, extra.length === 1 ? extra[0] : '')
   })
 
   // exposeHeadRoute false because fastify would otherwise auto-register HEAD
