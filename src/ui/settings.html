@@ -121,6 +121,21 @@
       </select>
       <div class="field-note">Versions are ordered by estimated Mbps.</div>
     </div>
+    <div class="field">
+      <label for="subtitleProviderUrls">Subtitle Providers</label>
+      <textarea id="subtitleProviderUrls" rows="3" placeholder="https://opensubtitles-v3.strem.io"></textarea>
+      <div class="field-note">One Stremio add-on URL per line. Leave empty to use the stream add-ons above that offer subtitles.</div>
+    </div>
+    <div class="field">
+      <label for="subtitleLanguages">Subtitle Languages</label>
+      <input id="subtitleLanguages" type="text" placeholder="en, fr, ro, de">
+      <div class="field-note">Comma-separated, two or three letters each. Leave empty to offer every language.</div>
+    </div>
+    <div class="field">
+      <label for="subtitleMaxPerLanguage">Subtitles Per Language</label>
+      <input id="subtitleMaxPerLanguage" type="number" min="1" max="20" step="1">
+      <div class="field-note">How many tracks to offer for each language, 1 to 20.</div>
+    </div>
     <label class="check-item field" for="stremioSearchEnabled">
       <input id="stremioSearchEnabled" type="checkbox" onchange="syncStremioSearchSourceVisibility()">
       <div class="check-meta">
@@ -1061,6 +1076,10 @@
     syncDiscoverPresentationVisibility()
     document.getElementById('mediaSourceLimit').value = String([5, 10, 20].includes(d.mediaSourceLimit) ? d.mediaSourceLimit : 10)
     syncMediaSourceLimitVisibility()
+    document.getElementById('subtitleProviderUrls').value = d.subtitleProviderUrls || ''
+    // ?? rather than ||, because an empty list is a real value: no language filter.
+    document.getElementById('subtitleLanguages').value = d.subtitleLanguages ?? 'eng'
+    document.getElementById('subtitleMaxPerLanguage').value = String(d.subtitleMaxPerLanguage || 3)
     setSecretPlaceholder('rdApiKey', hasStoredRdApiKey, 'Enter your Real-Debrid API key')
     setSecretPlaceholder('torBoxApiKey', hasStoredTorBoxApiKey, 'Enter your TorBox API key')
     setSecretPlaceholder('premiumizeApiKey', hasStoredPremiumizeApiKey, 'Enter your Premiumize API key')
@@ -1810,6 +1829,9 @@
       discoverEnabled: document.getElementById('discoverEnabled').checked,
       discoverPresentationMode: document.getElementById('discoverPresentationMode').value,
       mediaSourceLimit: document.getElementById('mediaSourceLimit').value,
+      subtitleProviderUrls: document.getElementById('subtitleProviderUrls').value,
+      subtitleLanguages: document.getElementById('subtitleLanguages').value,
+      subtitleMaxPerLanguage: document.getElementById('subtitleMaxPerLanguage').value,
       serverUrl:         document.getElementById('serverUrl').value,
       showAddDefaultMode: document.getElementById('showAddDefaultMode').value,
       movieReleaseMode: document.getElementById('movieReleaseMode').value,
