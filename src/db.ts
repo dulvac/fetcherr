@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { config } from './config.js'
+import { normalizeSubtitleLanguage } from './subtitle-lang.js'
 
 export interface Movie {
   id:                 number
@@ -91,6 +92,9 @@ export interface AppUser {
   stremioToken: string
   stremioEnabled: boolean
   stremioPlayCap: number
+  // '' offers every subtitle track and selects none. Otherwise an ISO 639-2/B
+  // code, and the first track in that language is this account's default.
+  subtitleLanguage: string
   authSource: AppUserAuthSource
   createdAt: string
   updatedAt: string
@@ -530,6 +534,7 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_token TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_enabled INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_play_cap INTEGER NOT NULL DEFAULT 30`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN subtitle_language TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     // Partial, so every account without a token can hold '' without colliding.
     try { _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS app_users_stremio_token ON app_users(stremio_token) WHERE stremio_token <> ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE stremio_plays ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
@@ -595,6 +600,7 @@ function row2appUser(r: Record<string, unknown>): AppUser {
     stremioToken: (r.stremio_token as string) ?? '',
     stremioEnabled: Number(r.stremio_enabled ?? 0) !== 0,
     stremioPlayCap: Number(r.stremio_play_cap ?? 30),
+    subtitleLanguage: (r.subtitle_language as string) ?? '',
     authSource: r.auth_source === 'ldap' ? 'ldap' : 'local',
     createdAt: (r.created_at as string) ?? '',
     updatedAt: (r.updated_at as string) ?? '',
@@ -1679,7 +1685,7 @@ export function createUser(
 
 export function updateUser(
   userId: string,
-  updates: { username?: string; password?: string; role?: AppUserRole; maxRating?: string; searchEnabled?: boolean },
+  updates: { username?: string; password?: string; role?: AppUserRole; maxRating?: string; searchEnabled?: boolean; subtitleLanguage?: string },
 ): AppUser {
   const existing = getUserById(userId)
   if (!existing) throw new Error('User not found')
@@ -1690,6 +1696,15 @@ export function updateUser(
   const passwordHash = updates.password && updates.password.trim()
     ? hashPassword(updates.password)
     : existing.passwordHash
+  // Stored in the vocabulary tracks carry, so the preference compares directly.
+  // Refused here, before anything is written, rather than stored and ignored.
+  let subtitleLanguage = existing.subtitleLanguage
+  if (updates.subtitleLanguage != null) {
+    const wanted = updates.subtitleLanguage.trim()
+    const code = wanted ? normalizeSubtitleLanguage(wanted) : ''
+    if (code === null) throw new Error(`Unknown subtitle language: ${wanted}`)
+    subtitleLanguage = code
+  }
   if (!username) throw new Error('Username is required')
   if (existing.role === 'admin' && role !== 'admin') {
     const admins = getDb().prepare(`SELECT COUNT(*) AS n FROM app_users WHERE role = 'admin'`).get() as { n: number }
@@ -1697,9 +1712,9 @@ export function updateUser(
   }
   getDb().prepare(`
     UPDATE app_users
-    SET username = ?, password_hash = ?, role = ?, max_rating = ?, search_enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    SET username = ?, password_hash = ?, role = ?, max_rating = ?, search_enabled = ?, subtitle_language = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
     WHERE id = ?
-  `).run(username, passwordHash, role, maxRating, searchEnabled ? 1 : 0, userId)
+  `).run(username, passwordHash, role, maxRating, searchEnabled ? 1 : 0, subtitleLanguage, userId)
   return getUserById(userId)!
 }
 

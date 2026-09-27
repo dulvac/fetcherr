@@ -490,6 +490,7 @@
   let hasStoredTraktClientSecret = false
   let hasStoredMdblistApiKey = false
   let managedUsers = []
+  let subtitleLanguageOptions = []
   let deletedUserIds = new Set()
   let userModalMode = 'create'
   let userModalTargetId = null
@@ -1131,6 +1132,7 @@
       : []
     renderMdblistRows()
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
+    subtitleLanguageOptions = Array.isArray(d.subtitleLanguageOptions) ? d.subtitleLanguageOptions : []
     managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
     deletedUserIds = new Set()
     document.getElementById('ldapStatus').textContent = d.ldap && d.ldap.enabled
@@ -1164,6 +1166,16 @@
       ['3', 'Level 3: R, TV-MA'],
       ['4', 'Level 4: NC-17'],
     ].map(([optionValue, label]) => `<option value="${optionValue}" ${optionValue === value ? 'selected' : ''}>${label}</option>`).join('')
+  }
+
+  // Blank first, because offering everything and selecting nothing is the default.
+  // A stored value that is no longer in the configured list stays visible, so
+  // saving the table does not silently clear it.
+  function subtitlePreferenceSelectOptions(selected) {
+    const value = selected || ''
+    const options = [['', 'Offer all, select none'], ...subtitleLanguageOptions.map(option => [option.code, option.name])]
+    if (value && !options.some(([code]) => code === value)) options.push([value, value])
+    return options.map(([code, label]) => `<option value="${escapeHtml(code)}" ${code === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')
   }
 
   function defaultRatingLimitForRole(role) {
@@ -1211,6 +1223,7 @@
             <th>Ratings Limit</th>
             <th>Stremio Search</th>
             <th>Stremio Access</th>
+            <th>Subtitles</th>
             <th>Password</th>
             <th>Actions</th>
           </tr>
@@ -1247,6 +1260,11 @@
                   <button type="button" class="btn btn-sm btn-danger" ${user.isNew || user.deleted || !(user.installUrl || user.stremioEnabled) ? 'disabled' : ''} onclick="reportStremioFailure(revokeStremioAccess('${user.id}'))">Revoke</button>
                 </div>
                 <div class="user-id-cell">${escapeHtml(stremioAccessState(user))}</div>
+              </td>
+              <td data-label="Subtitles">
+                <select class="rating-limit-select" aria-label="Preferred subtitle language" ${user.isNew || user.deleted ? 'disabled' : ''} onchange="updateUserField('${user.id}', 'subtitleLanguage', this.value)">
+                  ${subtitlePreferenceSelectOptions(user.subtitleLanguage)}
+                </select>
               </td>
               <td data-label="Password">
                 <div class="user-actions">
@@ -1896,6 +1914,7 @@
             role: user.role,
             maxRating: user.role === 'admin' ? 'unrestricted' : user.maxRating || 'unrestricted',
             searchEnabled: user.searchEnabled === true,
+            subtitleLanguage: user.subtitleLanguage || '',
           }
 
       const userRes = await fetch('/ui/users-data', {

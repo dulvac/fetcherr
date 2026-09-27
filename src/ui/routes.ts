@@ -862,6 +862,7 @@ export async function uiRoutes(app: FastifyInstance) {
         // only inside the install URL, and this endpoint is admin-only.
         installUrl: stremioInstallUrl(user.stremioToken, stremioInstallOrigin(req.headers as Record<string, string | undefined>)),
         authSource: user.authSource,
+        subtitleLanguage: user.subtitleLanguage,
       })),
     }
   })
@@ -1196,6 +1197,7 @@ export async function uiRoutes(app: FastifyInstance) {
       role?: string
       maxRating?: string
       searchEnabled?: boolean
+      subtitleLanguage?: string
       action?: string
     }
     const role = body.role != null
@@ -1216,11 +1218,12 @@ export async function uiRoutes(app: FastifyInstance) {
           role,
           maxRating: body.maxRating,
           searchEnabled: body.searchEnabled,
+          subtitleLanguage: body.subtitleLanguage,
         })
-        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
+        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource, subtitleLanguage: user.subtitleLanguage } }
       }
       const user = createUser(body.username ?? '', body.password ?? '', role ?? 'user', body.maxRating ?? 'unrestricted', body.searchEnabled)
-      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
+      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource, subtitleLanguage: user.subtitleLanguage } }
     } catch (err) {
       return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
     }
