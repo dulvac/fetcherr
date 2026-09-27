@@ -70,6 +70,20 @@ export function attachSubtitleStreams(
       DeliveryUrl: `/Videos/${itemId}/${sourceId}/Subtitles/${first + i}/0/Stream.${track.format}`,
       IsExternalUrl: false,
       IsDefault: i === defaultAt,
+      // The rest of what real Jellyfin sends for an external .srt. Infuse needs
+      // none of it; it is here for players that only trust a stream shaped
+      // exactly like a library file's.
+      Title: track.label,
+      IsForced: false,
+      IsHearingImpaired: false,
+      TimeBase: '1/1000',
+      Level: 0,
+      Path: `/fetcherr/subtitles/${itemId}/${first + i}.${track.lang}.${track.format}`,
+      LocalizedUndefined: 'Undefined',
+      LocalizedDefault: 'Default',
+      LocalizedForced: 'Forced',
+      LocalizedExternal: 'External',
+      LocalizedHearingImpaired: 'Hearing Impaired',
     }))
     const next: Record<string, unknown> = { ...source, MediaStreams: [...existing, ...subtitleStreams] }
     if (defaultAt >= 0) next.DefaultSubtitleStreamIndex = first + defaultAt
