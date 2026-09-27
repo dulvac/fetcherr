@@ -3173,6 +3173,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       MediaSources: mediaSources,
       AlternateMediaSources: mediaSources,
       MediaSourceCount: mediaSources.length,
+      // Real Jellyfin also lists the first source's streams on the item itself.
+      MediaStreams: (mediaSources[0] as Record<string, unknown> | undefined)?.MediaStreams ?? [],
     }
   }
 

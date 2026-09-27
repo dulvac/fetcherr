@@ -50,6 +50,10 @@ test('subtitle streams follow the existing streams and point at this server', ()
     Type: 'Subtitle', Index: 2, Codec: 'srt', Language: 'eng', DisplayTitle: 'English 1',
     IsExternal: true, IsTextSubtitleStream: true, SupportsExternalStream: true,
     DeliveryMethod: 'External', DeliveryUrl: '/Videos/item-1/src/Subtitles/2/0/Stream.srt', IsExternalUrl: false, IsDefault: false,
+    Title: 'English 1', IsForced: false, IsHearingImpaired: false, TimeBase: '1/1000', Level: 0,
+    Path: '/fetcherr/subtitles/item-1/2.eng.srt',
+    LocalizedUndefined: 'Undefined', LocalizedDefault: 'Default', LocalizedForced: 'Forced',
+    LocalizedExternal: 'External', LocalizedHearingImpaired: 'Hearing Impaired',
   })
   assert.deepEqual(streams.slice(2).map(stream => [stream.Index, stream.Codec, stream.DeliveryUrl]), [
     [2, 'srt', '/Videos/item-1/src/Subtitles/2/0/Stream.srt'],

@@ -164,6 +164,8 @@ test('the item detail screen offers the same tracks, with the account\'s default
   assert.deepEqual(lookups, [['movie', 'tt0111161']])
   assert.equal(streams.filter(stream => stream.Type === 'Subtitle').length, 3)
   assert.equal(source.DefaultSubtitleStreamIndex, 4)
+  const topLevel = res.json().MediaStreams as Array<Record<string, unknown>>
+  assert.deepEqual(topLevel.map(stream => stream.Type), ['Video', 'Audio', 'Subtitle', 'Subtitle', 'Subtitle'])
 })
 
 test('with media source selection on, every offered version carries the subtitles', async t => {
