@@ -190,6 +190,11 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
       const lang = normalizeSubtitleLanguage(entry.lang)
       if (!url || !lang) continue
       if (languages.length && !languages.includes(lang)) continue
+      const format = formatOf(url, entry.subtitleFileName)
+      // MicroDVD counts frames and VobSub is images that need an .idx beside
+      // them; neither plays reliably as an external text track, and skipping
+      // them here lets the cap fill with files that do.
+      if (format === 'sub') continue
       if (seenUrls.has(url)) continue
       seenUrls.add(url)
       let list = byLanguage.get(lang)
@@ -199,7 +204,7 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
       }
       if (list.length >= maxPerLanguage) continue
       const ownId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : String(entryIdx)
-      list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format: formatOf(url, entry.subtitleFileName) })
+      list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format })
     }
   }
 

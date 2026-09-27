@@ -284,3 +284,16 @@ test('no providers at all means no subtitles', async () => {
   configure()
   assert.deepEqual(await fetchSubtitles('movie', 'tt0111161'), [])
 })
+
+test('.sub files are not offered and do not use up the cap', async t => {
+  const provider = await startFakeSubtitleProvider({
+    subtitles: [
+      { id: 'micro', lang: 'eng', url: 'https://subs.example/file/1', subtitleFileName: 'Movie.sub' },
+      { id: 'srt', lang: 'eng', url: 'https://subs.example/file/2', subtitleFileName: 'Movie.srt' },
+    ],
+  })
+  t.after(() => provider.close())
+  configure({ subtitleProviderUrls: [provider.url], subtitleMaxPerLanguage: 1 })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-srt'])
+})
