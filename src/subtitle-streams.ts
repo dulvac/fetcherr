@@ -72,3 +72,12 @@ export function attachSubtitleStreams(
     return next
   })
 }
+
+// Both media source builders list video at 0 and audio at 1, so the subtitle
+// streams attachSubtitleStreams appends start at 2. A client fetching
+// /Videos/.../Subtitles/{index} is asking for that position in the same list.
+export const FIRST_SUBTITLE_STREAM_INDEX = 2
+
+export function subtitleTrackAtIndex(tracks: SubtitleTrack[], streamIndex: number): SubtitleTrack | null {
+  return tracks[streamIndex - FIRST_SUBTITLE_STREAM_INDEX] ?? null
+}

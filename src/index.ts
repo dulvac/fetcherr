@@ -319,6 +319,11 @@ function registerPlaybackItem(itemId: string, playPath: string): void {
   playbackItemPaths.set(itemId, { playPath, expiresAt: Date.now() + PLAYBACK_ITEM_TTL_MS })
 }
 
+function playPathForItem(itemId: string): string | null {
+  const entry = playbackItemPaths.get(itemId)
+  return entry && entry.expiresAt > Date.now() ? entry.playPath : null
+}
+
 function registerPlaybackClient(playPath: string, clientName: string): void {
   cleanupPlaybackPrewarmCache()
   playbackClientNames.set(playPath, { clientName, expiresAt: Date.now() + PLAYBACK_ITEM_TTL_MS })
@@ -1999,9 +2004,9 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
 // PlaybackInfo for search results too.
 const lookupSubtitles = (mediaType: StremioMediaType, externalId: string) => fetchSubtitles(mediaType, externalId)
 
-await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
-await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
-await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles })
+await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, playPathForItem })
+await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, playPathForItem })
+await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, playPathForItem })
 await app.register(uiRoutes)
 // One surface, one prefix: no /emby-style alias registration for the addon. The
 // plugin derives its own route paths and its token redaction from app.prefix, so
