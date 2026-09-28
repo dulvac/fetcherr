@@ -219,7 +219,7 @@ test('an account without search, or a search for people only, asks nobody', asyn
   assert.deepEqual(cinemeta.requests, [])
 })
 
-const TRACKS: SubtitleTrack[] = [{ id: 'fr-1', url: 'https://subs.example/fr.srt', lang: 'fre', label: 'French', format: 'srt' }]
+const TRACKS: SubtitleTrack[] = [{ id: 'fr-1', url: 'https://subs.example/fr.srt', lang: 'fre', label: 'French', format: 'srt', release: '' }]
 
 test('a series found through TMDB opens, lists its seasons and episodes, and plays', async () => {
   configure()
