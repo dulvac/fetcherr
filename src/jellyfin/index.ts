@@ -1287,6 +1287,11 @@ function parseJsonArray<T>(value: string): T[] {
   }
 }
 
+// 0 means TMDB has no release or air date for the title, not the year zero.
+function productionYear(year: number): number | undefined {
+  return year > 0 ? year : undefined
+}
+
 function genreItems(genres: string[]) {
   return genres.map(name => ({ Name: name, Id: stableMetaId('genre', name) }))
 }
@@ -1369,7 +1374,7 @@ function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
     IsPlayable:         true,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     m.year,
+    ProductionYear:     productionYear(m.year),
     Overview:           m.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1419,7 +1424,7 @@ function showToSeriesItem(s: Show, userId = DEFAULT_ADMIN_USER_ID) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     s.year,
+    ProductionYear:     productionYear(s.year),
     Overview:           s.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1785,7 +1790,7 @@ function movieToSearchItem(m: Movie) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     m.year,
+    ProductionYear:     productionYear(m.year),
     Overview:           m.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1829,7 +1834,7 @@ function showToSearchSeriesItem(s: Show) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     s.year,
+    ProductionYear:     productionYear(s.year),
     Overview:           s.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
