@@ -284,6 +284,25 @@ test('a slow Gestdown costs its own timeout, not a fast provider\'s answer', asy
   assert.deepEqual(tracks.map(track => track.id), ['1-a'])
 })
 
+test('turning Gestdown off while its lookup is in flight still gives the other provider\'s tracks', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }], showMode: 'slow', slowMs: 5000 })
+  t.after(() => fake.close())
+  const cinemeta = stubCinemeta(() => ({ status: 200, meta: { id: IMDB_ID, tvdb_id: TVDB_ID } }))
+  t.after(cinemeta.restore)
+  const provider = await startFakeSubtitleProvider({ subtitles: [{ id: 'a', lang: 'eng', url: 'https://subs.example/a' }] })
+  t.after(() => provider.close())
+  configure({ subtitleProviderUrls: [provider.url], gestdownBaseUrl: fake.url, subtitleTimeoutMs: 150 })
+
+  const promise = fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  // Flips well before Gestdown's own 150ms deadline fires, and long after the
+  // lookup has already read config.subtitleGestdown once to decide to ask it.
+  const flip = setTimeout(() => { config.subtitleGestdown = false }, 20)
+  t.after(() => { clearTimeout(flip); config.subtitleGestdown = true })
+  const tracks = await promise
+  assert.deepEqual(tracks.map(track => track.id), ['1-a'])
+})
+
 test('Gestdown\'s tracks take turns with a subtitle provider\'s, in each language', async t => {
   const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
   t.after(() => fake.close())

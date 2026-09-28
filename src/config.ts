@@ -302,8 +302,9 @@ export const SUBTITLE_POOL_PER_LANGUAGE = 30
 // though the pool behind it is deep.
 export const SUBTITLE_MAX_PER_LANGUAGE = 10
 
-// Without a cap a popular title yields over a hundred tracks. Each version shows
-// its best few from the pool, so more than the cap allows would show no more.
+// Without a cap a popular title yields over a hundred tracks, and every one
+// shown costs Infuse a fetch at play start (see SUBTITLE_MAX_PER_LANGUAGE
+// above), so an uncapped list would cost far more than it would ever show.
 export function parseSubtitleMaxPerLanguage(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? '', 10)
   if (!Number.isFinite(parsed)) return 3

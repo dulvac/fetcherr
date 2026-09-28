@@ -85,7 +85,11 @@ export async function fetchSubtitles(
 async function fetchUncached(mediaType: StremioMediaType, externalId: string, extra?: SubtitleExtra): Promise<SubtitleTrack[]> {
   try {
     const { bases, checkManifest } = subtitleProviders()
-    if (!bases.length && !config.subtitleGestdown) return []
+    // Read once, not once before the await and again after: a Settings save
+    // can flip this while a lookup is in flight, and a second read after the
+    // await would misalign idx === bases.length against the array built below.
+    const gestdown = config.subtitleGestdown
+    if (!bases.length && !gestdown) return []
     const path = requestPath(mediaType, externalId, extra)
     const timeoutMs = config.subtitleTimeoutMs
     // Gestdown is one more answer, after every configured or discovered
@@ -94,13 +98,13 @@ async function fetchUncached(mediaType: StremioMediaType, externalId: string, ex
     // it has no file hash of its own to match against.
     const settled = await Promise.allSettled([
       ...bases.map(base => withDeadline(fetchFromProvider(base, path, checkManifest, timeoutMs), timeoutMs)),
-      ...(config.subtitleGestdown
+      ...(gestdown
         ? [withDeadline(fetchGestdownSubtitles(externalId, config.subtitleLanguages, reason => logFailure('gestdown', 'Gestdown', path, reason)), timeoutMs)]
         : []),
     ])
     const answers = settled.map((result, idx) => {
       if (result.status === 'fulfilled') return result.value
-      const isGestdown = config.subtitleGestdown && idx === bases.length
+      const isGestdown = gestdown && idx === bases.length
       if (isGestdown) logFailure('gestdown', 'Gestdown', path, result.reason)
       else logFailure(bases[idx], providerLabel(bases[idx], idx), path, result.reason)
       return []
@@ -185,9 +189,9 @@ function usableUrl(value: unknown): string | null {
 }
 
 // Checks, in order: an explicit file name's trailing extension, then the URL
-// path's trailing extension, then a .vtt path segment that is not the path's
-// end — OpenSubtitles v3+ serves subtitles at paths like
-// /sub.vtt/?lang_code=en&sub_id=5467612.
+// path's trailing extension, then any other .vtt path segment, since the two
+// checks above already catch one at the path's end. OpenSubtitles v3+ serves
+// subtitles at paths like /sub.vtt/?lang_code=en&sub_id=5467612.
 function formatOf(url: string, fileName: unknown): string {
   const pathname = new URL(url).pathname
   for (const candidate of [typeof fileName === 'string' ? fileName : '', pathname]) {
