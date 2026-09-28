@@ -99,3 +99,14 @@ test('with no file name the provider order stands and only the cap applies', () 
   assert.deepEqual(ids(rankForFile(TRACKS, null, 2)), ['e1', 'e2', 'f1', 'f2', 'r1'])
   assert.deepEqual(ids(rankForFile(TRACKS, '', 2)), ['e1', 'e2', 'f1', 'f2', 'r1'])
 })
+
+test('a missing or non-string release reads as no release and never throws', () => {
+  for (const bad of [undefined, null, 42, {}]) {
+    assert.deepEqual(releaseTags(bad as never), { resolution: null, family: null, source: null, group: null })
+    assert.equal(releaseLabel(bad as never), '')
+    assert.equal(matchScore(bad as never, 'The.Show.S01E01.1080p.BluRay-GRP.mkv'), 0)
+    assert.equal(matchScore('The.Show.S01E01.1080p.BluRay-GRP', bad as never), 0)
+  }
+  const tracks = [{ lang: 'eng', id: 'a' }, { lang: 'eng', id: 'b', release: 'X.1080p.BluRay-GRP' }] as never
+  assert.deepEqual((rankForFile(tracks, 'Y.1080p.BluRay-GRP.mkv', 3) as unknown as Array<{ id: string }>).map(track => track.id), ['b', 'a'])
+})
