@@ -328,6 +328,64 @@ test('answers are kept ten minutes and empty answers two', async t => {
   assert.equal(provider.requests.length, 4)
 })
 
+test('a slow provider costs the answer two minutes, not ten, though the fast one\'s tracks are kept', async t => {
+  t.mock.method(console, 'warn', () => {})
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const fast = await startFakeSubtitleProvider({ subtitles: [sub('a', 'eng')] })
+  const slow = await startFakeSubtitleProvider({ mode: 'slow', slowMs: 5000 })
+  t.after(() => Promise.all([fast.close(), slow.close()]))
+  configure({ subtitleProviderUrls: [fast.url, slow.url], subtitleTimeoutMs: 200 })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a'])
+  assert.equal(fast.requests.length, 1)
+  assert.equal(slow.requests.length, 1)
+
+  t.mock.timers.tick(2 * 60 * 1000 - 1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(fast.requests.length, 1, 'served from cache')
+  assert.equal(slow.requests.length, 1, 'served from cache')
+
+  t.mock.timers.tick(1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(fast.requests.length, 2, 'both providers are asked again')
+  assert.equal(slow.requests.length, 2, 'both providers are asked again')
+})
+
+test('a provider answering HTTP 500 costs the answer two minutes too', async t => {
+  t.mock.method(console, 'warn', () => {})
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const good = await startFakeSubtitleProvider({ subtitles: [sub('a', 'eng')] })
+  const failing = await startFakeSubtitleProvider({ mode: 'error' })
+  t.after(() => Promise.all([good.close(), failing.close()]))
+  configure({ subtitleProviderUrls: [good.url, failing.url] })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a'])
+  t.mock.timers.tick(2 * 60 * 1000 - 1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(good.requests.length, 1, 'served from cache')
+  t.mock.timers.tick(1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(good.requests.length, 2, 'asked again')
+})
+
+test('two providers that both answer are still kept ten minutes', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const a = await startFakeSubtitleProvider({ subtitles: [sub('a', 'eng')] })
+  const b = await startFakeSubtitleProvider({ subtitles: [sub('b', 'fre')] })
+  t.after(() => Promise.all([a.close(), b.close()]))
+  configure({ subtitleProviderUrls: [a.url, b.url] })
+
+  await fetchSubtitles('movie', 'tt0111161')
+  t.mock.timers.tick(10 * 60 * 1000 - 1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(a.requests.length, 1, 'served from cache')
+  assert.equal(b.requests.length, 1, 'served from cache')
+  t.mock.timers.tick(1)
+  await fetchSubtitles('movie', 'tt0111161')
+  assert.equal(a.requests.length, 2, 'asked again')
+  assert.equal(b.requests.length, 2, 'asked again')
+})
+
 test('concurrent lookups for one title share one request', async t => {
   const provider = await startFakeSubtitleProvider({ subtitles: [sub('a', 'eng')] })
   t.after(() => provider.close())

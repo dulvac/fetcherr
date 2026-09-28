@@ -34,7 +34,10 @@ export interface SubtitleExtra {
 type RawSubtitle = Record<string, unknown>
 
 const POSITIVE_TTL_MS = 10 * 60 * 1000
-// Short, so a provider that recovers shows up on the next visit.
+// Short, so a provider that recovers shows up on the next visit. It also
+// bounds a partial answer, where one provider timed out, errored, or Gestdown
+// failed on a language: the tracks that did come back are kept, but not
+// trusted for the full ten minutes, so the failed provider is asked again soon.
 const EMPTY_TTL_MS = 2 * 60 * 1000
 const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
 // Movie or episode ids in the stream id shape: tt0111161, tt13210838:1:2. They go
@@ -42,7 +45,10 @@ const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
 const EXTERNAL_ID = /^tt\d{7,10}(?::\d{1,4}:\d{1,4})?$/
 const FORMATS = new Set(['srt', 'vtt', 'ass', 'ssa', 'sub'])
 
-type CacheEntry = { promise: Promise<SubtitleTrack[]>; expiresAt: number }
+// fetchUncached also reports whether some provider's turn failed, so the
+// cache below can hold a partial answer only briefly.
+type UncachedAnswer = { tracks: SubtitleTrack[]; partial: boolean }
+type CacheEntry = { promise: Promise<UncachedAnswer>; expiresAt: number }
 const cache = new Map<string, CacheEntry>()
 const lastFailureLogAt = new Map<string, number>()
 
@@ -61,7 +67,7 @@ export async function fetchSubtitles(
   // A hash-matched answer is specific to one file, so it is neither served from
   // nor stored in the title-level cache that Jellyfin lookups share.
   if (extra && (extra.videoHash || extra.videoSize || extra.filename)) {
-    return fetchUncached(mediaType, externalId, extra)
+    return (await fetchUncached(mediaType, externalId, extra)).tracks
   }
 
   const now = Date.now()
@@ -72,26 +78,31 @@ export async function fetchSubtitles(
   const existing = cache.get(key)
   // Shared while in flight too: Infuse asks for PlaybackInfo on every detail
   // screen, and for several at once when a season is opened.
-  if (existing) return existing.promise
+  if (existing) return (await existing.promise).tracks
 
   const promise = fetchUncached(mediaType, externalId)
   const entry: CacheEntry = { promise, expiresAt: now + POSITIVE_TTL_MS }
   cache.set(key, entry)
-  const tracks = await promise
-  entry.expiresAt = Date.now() + (tracks.length ? POSITIVE_TTL_MS : EMPTY_TTL_MS)
+  const { tracks, partial } = await promise
+  entry.expiresAt = Date.now() + (tracks.length && !partial ? POSITIVE_TTL_MS : EMPTY_TTL_MS)
   return tracks
 }
 
-async function fetchUncached(mediaType: StremioMediaType, externalId: string, extra?: SubtitleExtra): Promise<SubtitleTrack[]> {
+async function fetchUncached(mediaType: StremioMediaType, externalId: string, extra?: SubtitleExtra): Promise<UncachedAnswer> {
   try {
     const { bases, checkManifest } = subtitleProviders()
     // Read once, not once before the await and again after: a Settings save
     // can flip this while a lookup is in flight, and a second read after the
     // await would misalign idx === bases.length against the array built below.
     const gestdown = config.subtitleGestdown
-    if (!bases.length && !gestdown) return []
+    if (!bases.length && !gestdown) return { tracks: [], partial: false }
     const path = requestPath(mediaType, externalId, extra)
     const timeoutMs = config.subtitleTimeoutMs
+    // fetchGestdownSubtitles never rejects: a failed show or language lookup
+    // still resolves with whatever it did get, so the partial flag it sets
+    // here is the only sign of that failure, unlike a provider's, which shows
+    // up as a rejected settled result below.
+    let gestdownFailed = false
     // Gestdown is one more answer, after every configured or discovered
     // provider: it goes through the same deadline and lands at bases.length + 1,
     // whether or not any provider is named. It ignores extra (a hash lookup):
@@ -99,20 +110,25 @@ async function fetchUncached(mediaType: StremioMediaType, externalId: string, ex
     const settled = await Promise.allSettled([
       ...bases.map(base => withDeadline(fetchFromProvider(base, path, checkManifest, timeoutMs), timeoutMs)),
       ...(gestdown
-        ? [withDeadline(fetchGestdownSubtitles(externalId, config.subtitleLanguages, reason => logFailure('gestdown', 'Gestdown', path, reason)), timeoutMs)]
+        ? [withDeadline(fetchGestdownSubtitles(externalId, config.subtitleLanguages, reason => {
+            gestdownFailed = true
+            logFailure('gestdown', 'Gestdown', path, reason)
+          }), timeoutMs)]
         : []),
     ])
+    let partial = gestdownFailed
     const answers = settled.map((result, idx) => {
       if (result.status === 'fulfilled') return result.value
+      partial = true
       const isGestdown = gestdown && idx === bases.length
       if (isGestdown) logFailure('gestdown', 'Gestdown', path, result.reason)
       else logFailure(bases[idx], providerLabel(bases[idx], idx), path, result.reason)
       return []
     })
-    return selectTracks(answers, config.subtitleLanguages)
+    return { tracks: selectTracks(answers, config.subtitleLanguages), partial }
   } catch (err) {
     console.warn(`subtitles: lookup failed for ${mediaType} ${externalId}: ${err instanceof Error ? err.message : String(err)}`)
-    return []
+    return { tracks: [], partial: true }
   }
 }
 
