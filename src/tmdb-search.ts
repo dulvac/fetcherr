@@ -18,6 +18,9 @@ const PAGE_CACHE_MAX = 500
 // IMDb ids never change, so they are kept for good. The cap only stops a
 // process that runs for months from growing without bound.
 const IMDB_CACHE_MAX = 10_000
+// A missing one often gets filled in, above all for new titles, so "none" is
+// asked again after a day rather than hiding the title until a restart.
+const NO_IMDB_ID_TTL_MS = 24 * 60 * 60 * 1000
 // TMDB allows about 50 requests a second per key. Ten in flight ran 80 lookups
 // in 1.2 to 5.6 s on 2026-09-27 without a single refusal.
 const LOOKUPS_IN_FLIGHT = 10
@@ -79,8 +82,8 @@ interface Page<T> {
 const NOTHING_TO_SKIP: TmdbSkip = { movieTmdbIds: new Set(), movieImdbIds: new Set(), seriesTmdbIds: new Set(), seriesImdbIds: new Set() }
 
 const pageCache = new Map<string, { promise: Promise<Page<unknown>>; expiresAt: number }>()
-// '' is an answer too: TMDB has no IMDb id for that title.
-const imdbCache = new Map<string, string>()
+// '' is an answer too: TMDB has no IMDb id for that title, until expiresAt.
+const imdbCache = new Map<string, { imdbId: string; expiresAt: number }>()
 const lookupsInFlight = new Map<string, Promise<string | null>>()
 let lastFailureLogAt: number | undefined
 
@@ -226,13 +229,15 @@ async function resolveImdbIds(term: string, movies: MovieCandidate[], series: Se
 function imdbIdFor(kind: Kind, tmdbId: number, window: AbortSignal): Promise<string | null> {
   const key = `${kind}:${tmdbId}`
   const known = imdbCache.get(key)
-  if (known !== undefined) return Promise.resolve(known)
+  if (known && known.expiresAt > Date.now()) return Promise.resolve(known.imdbId)
   const pending = lookupsInFlight.get(key)
   if (pending) return pending
   const lookup = tmdbSearchGet(`/${kind}/${tmdbId}/external_ids`, {}, window)
     .then(raw => {
       const imdbId = isRecord(raw) && typeof raw.imdb_id === 'string' && IMDB_ID.test(raw.imdb_id) ? raw.imdb_id : ''
-      imdbCache.set(key, imdbId)
+      // Deleted first, so a refreshed entry goes to the back of the eviction order.
+      imdbCache.delete(key)
+      imdbCache.set(key, { imdbId, expiresAt: imdbId ? Infinity : Date.now() + NO_IMDB_ID_TTL_MS })
       trimCacheMap(imdbCache, IMDB_CACHE_MAX)
       return imdbId
     }, (err: unknown) => {

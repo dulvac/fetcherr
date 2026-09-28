@@ -169,6 +169,20 @@ test('answers are kept ten minutes, and IMDb ids for the life of the process', a
   assert.deepEqual([fake.count('movie'), fake.count('movie-ids')], [3, 1])
 })
 
+test('a missing IMDb id is asked for again after a day, since TMDB often fills it in', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const late: FakeTmdbMovie = { id: 2251, title: 'Brand New', imdb: null }
+  const fake = await fakeTmdb(t, { movies: [late] })
+  assert.deepEqual((await findTmdbTitles('brand new', ['movie'], NO_SKIP)).movies, [])
+  late.imdb = 'tt2251'
+  t.mock.timers.tick(24 * 60 * 60 * 1000 - 1)
+  assert.deepEqual((await findTmdbTitles('brand new', ['movie'], NO_SKIP)).movies, [])
+  assert.equal(fake.count('movie-ids'), 1)
+  t.mock.timers.tick(1)
+  assert.deepEqual((await findTmdbTitles('brand new', ['movie'], NO_SKIP)).movies?.map(m => m.imdbId), ['tt2251'])
+  assert.equal(fake.count('movie-ids'), 2)
+})
+
 test('the answer cache keeps at most 500 entries, oldest dropped first', async t => {
   const fake = await fakeTmdb(t)
   for (let i = 0; i < 501; i++) await findTmdbTitles(`term ${i}`, ['movie'], NO_SKIP)
