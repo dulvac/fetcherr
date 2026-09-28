@@ -41,3 +41,14 @@ test('items without a name sort last and do not throw', () => {
   const items = [{ Type: 'Movie' }, { Name: 'Monk', Type: 'Series' }]
   assert.deepEqual(rankSearchResults(items, 'monk').map(item => item.Type), ['Series', 'Movie'])
 })
+
+test('a title ranks by the better of its name and its original title', () => {
+  const items = [
+    { Name: 'Call My Agent! The Movie', OriginalTitle: 'Dix Pour Cent ! Le Film', Type: 'Movie' },
+    { Name: 'Call My Agent!', OriginalTitle: 'Dix pour cent', Type: 'Series' },
+    { Name: 'Dix pour cent', OriginalTitle: 'Ten Percent', Type: 'Movie' },
+  ]
+  assert.deepEqual(label(rankSearchResults(items, 'Dix pour cent')), [
+    'Series:Call My Agent!', 'Movie:Dix pour cent', 'Movie:Call My Agent! The Movie',
+  ])
+})

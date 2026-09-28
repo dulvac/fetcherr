@@ -23,10 +23,16 @@ function matchRank(title: string, term: string): number {
   return 3
 }
 
+// A title found by its original name, as a French or Romanian term finds it,
+// ranks by that name when it matches better than the English one.
 export function rankSearchResults<T extends Record<string, unknown>>(items: T[], searchTerm: string): T[] {
   const term = normalizeTitle(searchTerm)
+  const rankOf = (item: T) => Math.min(
+    matchRank(normalizeTitle(String(item.Name ?? '')), term),
+    item.OriginalTitle ? matchRank(normalizeTitle(String(item.OriginalTitle)), term) : 3,
+  )
   return items
-    .map((item, position) => ({ item, position, rank: matchRank(normalizeTitle(String(item.Name ?? '')), term) }))
+    .map((item, position) => ({ item, position, rank: rankOf(item) }))
     .sort((a, b) => a.rank - b.rank || a.position - b.position)
     .map(entry => entry.item)
 }

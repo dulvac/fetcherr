@@ -38,7 +38,7 @@ async function until(condition: () => boolean, what: string) {
 
 test('a movie result becomes a search-movie record with its IMDb id', () => {
   const movie = tmdbMovieToMovie({
-    tmdbId: 32601, imdbId: 'tt0093549', title: 'The Moromete Family', originalLanguage: 'ro', releaseDate: '1987-01-05',
+    tmdbId: 32601, imdbId: 'tt0093549', title: 'The Moromete Family', originalTitle: 'Moromeții', originalLanguage: 'ro', releaseDate: '1987-01-05',
     year: 1987, overview: 'A village in 1937.', posterPath: '/p.jpg', backdropPath: '/b.jpg', popularity: 3.5, voteAverage: 7.9,
   })
   assert.match(movie.syncedAt, /^\d{4}-\d{2}-\d{2}T/)
@@ -52,7 +52,7 @@ test('a movie result becomes a search-movie record with its IMDb id', () => {
 
 test('a series result becomes a Stremio series meta keyed by its IMDb id', () => {
   assert.deepEqual(tmdbSeriesToMeta({
-    tmdbId: 62476, imdbId: 'tt4063800', name: 'The Bureau', firstAirDate: '2015-04-27', year: 2015,
+    tmdbId: 62476, imdbId: 'tt4063800', name: 'The Bureau', originalTitle: 'Le Bureau des Légendes', firstAirDate: '2015-04-27', year: 2015,
     overview: 'Spies.', posterPath: '/bureau.jpg', backdropPath: '',
   }), { id: 'tt4063800', type: 'series', name: 'The Bureau', poster: '/bureau.jpg', description: 'Spies.', releaseInfo: '2015' })
 })
@@ -139,6 +139,15 @@ test('series are ranked by title before the cap of 20, past titles with no IMDb 
   assert.deepEqual(hits.series?.map(s => s.tmdbId), [1931, 1932, 1933, ...loose.slice(0, 17).map(s => s.id)])
   // The five exact titles with no id, then the twenty that have one.
   assert.ok(fake.count('tv-ids') >= 25, `${fake.count('tv-ids')} lookups`)
+})
+
+test('a series whose original name is the term is ranked first, before the cap', async t => {
+  // Looser matches by original name, then the exact one, in TMDB's order.
+  const loose = Array.from({ length: 25 }, (_, i) => ({ id: 1991 + i, name: `Loose ${i + 1}`, original_name: `Dix pour centimes ${i + 1}`, imdb: `tt${1991 + i}` }))
+  const exact = { id: 2016, name: 'Call My Agent!', original_name: 'Dix pour cent', imdb: 'tt4209256' }
+  await fakeTmdb(t, { series: [...loose, exact] })
+  const hits = await findTmdbTitles('Dix pour cent', ['series'], NO_SKIP)
+  assert.deepEqual(hits.series?.slice(0, 2).map(s => [s.tmdbId, s.originalTitle]), [[2016, 'Dix pour cent'], [1991, 'Dix pour centimes 1']])
 })
 
 test('series lookups stop once twenty series have an IMDb id', async t => {

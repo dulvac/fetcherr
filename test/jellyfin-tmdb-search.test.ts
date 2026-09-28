@@ -36,6 +36,7 @@ const tmdb = await startFakeTmdb({
     { id: 949, title: 'Heat', imdb: 'tt0113277', release_date: '1995-12-15' },
     { id: 5001, title: 'Heat Wave', imdb: 'tt5001', release_date: '2020-01-01' },
     { id: 194, title: 'Amélie', original_title: "Le Fabuleux Destin d'Amélie Poulain", imdb: 'tt0211915', release_date: '2001-04-25' },
+    { id: 5501, title: 'Amélie: The Making Of', original_title: "Le Fabuleux Destin d'Amélie Poulain : le tournage", imdb: 'tt5501', release_date: '2002-01-01' },
   ],
   series: [
     { id: 62476, name: 'The Bureau', original_name: 'Le Bureau des Légendes', imdb: 'tt4063800', first_air_date: '2015-04-27' },
@@ -164,10 +165,13 @@ test('Le Bureau des légendes finds The Bureau as a series that opens', async ()
 test('Dix pour cent and Moromeții find their titles by the original names', async () => {
   configure()
   const agent = await search('Dix pour cent')
-  assert.deepEqual(agent.map(item => [item.Name, item.Type]), [['Call My Agent! The Movie', 'Movie'], ['Call My Agent!', 'Series']])
-  assert.match(String(agent[0].Id), /^00000000-0000-4000-8004-/)
-  assert.equal(agent[0].IsPlayable, true)
-  assert.equal((agent[0].ProviderIds as Item).Imdb, 'tt30000001')
+  // The series is Dix pour cent itself; the movie only starts with it.
+  assert.deepEqual(agent.map(item => [item.Name, item.OriginalTitle, item.Type]), [
+    ['Call My Agent!', 'Dix pour cent', 'Series'], ['Call My Agent! The Movie', 'Dix Pour Cent ! Le Film', 'Movie'],
+  ])
+  assert.match(String(agent[1].Id), /^00000000-0000-4000-8004-/)
+  assert.equal(agent[1].IsPlayable, true)
+  assert.equal((agent[1].ProviderIds as Item).Imdb, 'tt30000001')
   assert.deepEqual(names(await search('Moromeții')), ['The Moromete Family', 'Moromete Family: On the Edge of Time'])
   assert.deepEqual(catalogSearches(), [])
 })
@@ -202,8 +206,9 @@ test('a library title found by its original name comes back as the library item'
   configure()
   // The library search matches the English title only, so only TMDB finds these.
   // A movie's search id is the same either way; the record behind it is not.
+  // It ranks by the name TMDB matched too, so it comes before a looser match.
   const movies = await search("Le Fabuleux Destin d'Amélie Poulain")
-  assert.deepEqual(movies.map(movie => [movie.Name, movie.OfficialRating]), [['Amélie', 'R']])
+  assert.deepEqual(movies.map(movie => [movie.Name, movie.OfficialRating]), [['Amélie', 'R'], ['Amélie: The Making Of', undefined]])
   const shows = await search('Engrenages')
   assert.deepEqual(shows.map(show => [show.Name, show.Id]), [['Spiral', `00000000-0000-4000-8001-${(5401).toString(16).padStart(12, '0')}`]])
 })

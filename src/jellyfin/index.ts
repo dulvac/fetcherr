@@ -2058,20 +2058,25 @@ function tmdbSearchActive(searchTerm: string): boolean {
 // title matches, the ones the apps would show, are checked.
 const TMDB_RATING_CHECKS = 40
 
-type TmdbCandidate = { Name: string; movie: TmdbMovieHit } | { Name: string; series: TmdbSeriesHit }
+type TmdbCandidate = { Name: string; OriginalTitle: string; movie: TmdbMovieHit } | { Name: string; OriginalTitle: string; series: TmdbSeriesHit }
 
 // Movies become the search-movie items Similar already uses. Series become the
 // same Stremio series items a Cinemeta result does, so both open and play as today.
 async function tmdbSearchItems(hits: TmdbHits, searchTerm: string, user: AppUser): Promise<Record<string, unknown>[]> {
   const candidates: TmdbCandidate[] = [
-    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, movie })),
-    ...(hits.series ?? []).map(series => ({ Name: series.name, series })),
+    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, OriginalTitle: movie.originalTitle, movie })),
+    ...(hits.series ?? []).map(series => ({ Name: series.name, OriginalTitle: series.originalTitle, series })),
   ]
   const limited = hasRatingLimit(user)
   // Unrestricted accounts, which is every account today, make no extra calls.
   const shown = limited ? rankSearchResults(candidates, searchTerm).slice(0, TMDB_RATING_CHECKS) : candidates
-  const items = await Promise.all(shown.map(candidate => tmdbCandidateItem(candidate, user, limited)))
+  const items = await Promise.all(shown.map(async candidate => withOriginalTitle(await tmdbCandidateItem(candidate, user, limited), candidate.OriginalTitle)))
   return items.filter((item): item is Record<string, unknown> => item !== null)
+}
+
+// Jellyfin's own field, which search ranking reads too.
+function withOriginalTitle<T extends Record<string, unknown> | null>(item: T, originalTitle: string | undefined): T {
+  return item && originalTitle ? { ...item, OriginalTitle: originalTitle } : item
 }
 
 async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limited: boolean): Promise<Record<string, unknown> | null> {
@@ -2188,9 +2193,17 @@ async function buildSearchResultItems(
   }))
 
   const combined = withoutExcludedLocationTypes([
-    ...[...localMovies, ...filterMoviesForUser(user, tmdbLibraryMovies)]
-      .map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
-    ...[...localShows, ...filterShowsForUser(user, tmdbLibraryShows)].map(show => showToSeriesItem(show, user.id)),
+    ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
+    ...localShows.map(show => showToSeriesItem(show, user.id)),
+    // With the name TMDB matched them by, so they rank by it too.
+    ...filterMoviesForUser(user, tmdbLibraryMovies).map(movie => withOriginalTitle(
+      searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>),
+      tmdbHits?.movies?.find(hit => hit.tmdbId === movie.tmdbId)?.originalTitle,
+    )),
+    ...filterShowsForUser(user, tmdbLibraryShows).map(show => withOriginalTitle(
+      showToSeriesItem(show, user.id) as Record<string, unknown>,
+      tmdbHits?.series?.find(hit => hit.tmdbId === show.tmdbId)?.originalTitle,
+    )),
     ...tmdbItems,
     ...stremioSearchItems,
   ], excludedLocationTypes)
