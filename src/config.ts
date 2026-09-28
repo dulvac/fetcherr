@@ -316,6 +316,10 @@ export const config = {
   host:       process.env.HOST ?? '0.0.0.0',
   dbPath:     process.env.DATABASE_PATH ?? '/app/data/fetcherr.db',
   tmdbApiKey: process.env.TMDB_API_KEY ?? '',
+  // Env only. Tests point it at a stand-in, and nothing else needs to move it.
+  tmdbBaseUrl: (process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3').replace(/\/$/, ''),
+  // Search waits on TMDB while someone types, so it gives up sooner than metadata fetches.
+  tmdbSearchTimeoutMs: parsePositiveIntegerSetting(process.env.TMDB_SEARCH_TIMEOUT_MS, 5000),
   tvdbApiKey: process.env.TVDB_API_KEY ?? '',
   sootioUrl:  normalizeSootioUrl(process.env.AIOSTREAM_URL ?? process.env.SOOTIO_URL ?? ''),
   serverName: process.env.SERVER_NAME ?? 'Fetcherr',
