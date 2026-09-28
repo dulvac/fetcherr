@@ -254,6 +254,30 @@ test('a 423 on one language keeps the others', async t => {
   assert.deepEqual(tracks.map(track => track.lang), ['eng'])
 })
 
+test('a 423 on one language costs the cached answer two minutes, not ten', async t => {
+  t.mock.method(console, 'warn', () => {})
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
+  t.after(() => fake.close())
+  const cinemeta = stubCinemeta(() => ({ status: 200, meta: { id: IMDB_ID, tvdb_id: TVDB_ID } }))
+  t.after(cinemeta.restore)
+  fake.setLanguage(GUID, 1, 1, 'en', { entries: [LIBERTY_ENTRY] })
+  fake.setLanguage(GUID, 1, 1, 'fr', { mode: '423' })
+  configure({ subtitleLanguages: ['eng', 'fre'], gestdownBaseUrl: fake.url })
+
+  const first = await fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  assert.deepEqual(first.map(track => track.lang), ['eng'])
+  assert.equal(fake.languageRequests.length, 2)
+
+  t.mock.timers.tick(2 * 60 * 1000 - 1)
+  await fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  assert.equal(fake.languageRequests.length, 2, 'served from cache')
+
+  t.mock.timers.tick(1)
+  await fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  assert.equal(fake.languageRequests.length, 4, 'the failed language is asked again')
+})
+
 test('an incomplete entry, and a season-pack fallback answer, are both dropped', async t => {
   const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
   t.after(() => fake.close())
