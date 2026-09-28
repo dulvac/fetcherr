@@ -13,7 +13,7 @@ import {
 } from '../db.js'
 import { authenticateUser } from '../ldap-auth.js'
 import {
-  fetchMovieByTmdbId, posterUrl,
+  fetchMovieByTmdbId, fetchMovieOfficialRatingByIds, posterUrl,
   fetchShowByTmdbId,
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
   fetchMovieRecommendations, fetchShowRecommendations,
@@ -37,7 +37,7 @@ import {
   stremioOfficialRating,
 } from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
-import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, type TmdbHits } from '../tmdb-search.js'
+import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, type TmdbHits, type TmdbMovieHit, type TmdbSeriesHit } from '../tmdb-search.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -2047,20 +2047,51 @@ function searchDisabledResponse(
   }
 }
 
-// TMDB answers search only with a key. Until its results get rating checks, an
-// account with a rating limit keeps the Cinemeta path, where the gate applies.
-function tmdbSearchActive(user: AppUser): boolean {
-  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey && !hasRatingLimit(user)
+// TMDB answers search only with a key.
+function tmdbSearchActive(): boolean {
+  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey
 }
+
+// A rating-limited account costs one rating lookup per title, so only the best
+// title matches, the ones the apps would show, are checked.
+const TMDB_RATING_CHECKS = 40
+
+type TmdbCandidate = { Name: string; movie: TmdbMovieHit } | { Name: string; series: TmdbSeriesHit }
 
 // Movies become the search-movie items Similar already uses. Series become the
 // same Stremio series items a Cinemeta result does, so both open and play as today.
-async function tmdbSearchItems(hits: TmdbHits): Promise<Record<string, unknown>[]> {
-  const movies = (hits.movies ?? []).map(hit =>
-    searchMovieAutoplayItem(movieToSearchItem(tmdbMovieToMovie(hit)) as Record<string, unknown>))
-  const series = await Promise.all((hits.series ?? []).map(async hit =>
-    stremioSearchMetaToItem(await hydrateStremioSeriesMeta(tmdbSeriesToMeta(hit)), 'series') as Record<string, unknown>))
-  return [...movies, ...series]
+async function tmdbSearchItems(hits: TmdbHits, searchTerm: string, user: AppUser): Promise<Record<string, unknown>[]> {
+  const candidates: TmdbCandidate[] = [
+    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, movie })),
+    ...(hits.series ?? []).map(series => ({ Name: series.name, series })),
+  ]
+  const limited = hasRatingLimit(user)
+  // Unrestricted accounts, which is every account today, make no extra calls.
+  const shown = limited ? rankSearchResults(candidates, searchTerm).slice(0, TMDB_RATING_CHECKS) : candidates
+  const items = await Promise.all(shown.map(candidate => tmdbCandidateItem(candidate, user, limited)))
+  return items.filter((item): item is Record<string, unknown> => item !== null)
+}
+
+async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limited: boolean): Promise<Record<string, unknown> | null> {
+  try {
+    if ('movie' in candidate) {
+      const movie = tmdbMovieToMovie(candidate.movie)
+      if (limited) {
+        movie.officialRating = await fetchMovieOfficialRatingByIds({ tmdbId: movie.tmdbId, imdbId: movie.imdbId })
+        // An empty rating is refused, as for every other title a limited account sees.
+        if (!canUserAccessMovie(user, movie)) return null
+      }
+      return searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)
+    }
+    const meta = tmdbSeriesToMeta(candidate.series)
+    if (!await canUserAccessStremioMeta(user, meta, 'series')) return null
+    const rating = await stremioRatingForVisibleMeta(user, meta, 'series')
+    return stremioSearchMetaToItem(await hydrateStremioSeriesMeta(meta), 'series', undefined, { officialRating: rating }) as Record<string, unknown>
+  } catch {
+    // A rating that cannot be established refuses the title. For anyone else,
+    // one odd title is not worth failing the whole search over.
+    return null
+  }
 }
 
 async function buildSearchResultItems(
@@ -2093,7 +2124,7 @@ async function buildSearchResultItems(
   const localMovieImdbIds = new Set(localMovies.map(movie => movie.imdbId).filter(Boolean))
   const localShowImdbIds = new Set(localShows.map(show => show.imdbId).filter(Boolean))
 
-  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive(user)
+  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive()
     ? await findTmdbTitles(searchTerm, stremioTypes, {
         movieTmdbIds: localMovieIds,
         movieImdbIds: localMovieImdbIds,
@@ -2101,7 +2132,7 @@ async function buildSearchResultItems(
         seriesImdbIds: localShowImdbIds,
       })
     : null
-  const tmdbItems = tmdbHits ? await tmdbSearchItems(tmdbHits) : []
+  const tmdbItems = tmdbHits ? await tmdbSearchItems(tmdbHits, searchTerm, user) : []
   // With TMDB as the source, the Stremio search only fills in the types TMDB
   // could not answer. Otherwise it answers every type, as it always has.
   const stremioSearchTypes = tmdbHits
