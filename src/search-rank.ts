@@ -8,7 +8,10 @@ function normalizeTitle(value: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
+    // Any Unicode letter or digit is kept, not just a-z0-9, so a Thai or
+    // Cyrillic or CJK title does not shrink to the one Latin word it happens
+    // to contain and become a false exact match against that word alone.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
     .replace(/^(the|a|an) /, '')
 }
