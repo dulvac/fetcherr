@@ -1901,10 +1901,11 @@ function relayOptions(key: string, playPath: string, label: string) {
     label,
     onRelayed: (url: string) => relayMemory.set(key, url),
     // Forget the play and the resolution behind it, so the next request
-    // resolves the title again instead of retrying a dead URL.
-    onFailed: () => {
-      relayMemory.delete(key)
-      playbackPrewarmCache.delete(playPath)
+    // resolves the title again instead of retrying a dead URL. Only when the
+    // memory still holds what failed: a parallel request may have stored a
+    // newer URL that works.
+    onFailed: (tried: readonly string[]) => {
+      if (relayMemory.deleteIfHolding(key, tried)) playbackPrewarmCache.delete(playPath)
     },
   }
 }

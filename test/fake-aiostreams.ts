@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:http'
 //   gone     404, as for a token aiostreams no longer knows
 //   error    307 to /static/500.mp4, as aiostreams answers a failed stream
 //   endless  200, then 64 KiB every 20 ms until the client goes away
+//   slow     waits 500 ms before answering like good, for a client that leaves first
 //
 // Not a test file itself: `npm test` globs test/*.test.ts.
 
@@ -33,6 +34,15 @@ export async function startFakeAiostreams(): Promise<FakeAiostreams> {
     requests.push({ method: req.method ?? 'GET', path, ...(range ? { range } : {}) })
     const name = path.replace(/^\/api\/v1\/usenet\/stream\//, '').split(/[/?]/)[0]
 
+    if (name === 'slow') {
+      const timer = setTimeout(() => {
+        if (res.destroyed || res.writableEnded) return
+        res.writeHead(200, { 'content-type': 'video/x-matroska', 'content-length': String(FAKE_BODY.length) })
+        res.end(FAKE_BODY)
+      }, 500)
+      timers.add(timer as unknown as ReturnType<typeof setInterval>)
+      return
+    }
     if (name === 'good') {
       const match = range?.match(/^bytes=(\d+)-(\d*)$/)
       const total = FAKE_BODY.length

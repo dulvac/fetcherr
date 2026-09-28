@@ -55,21 +55,34 @@ test('relay memory forgets an entry once it expires, and set refreshes it', () =
   assert.equal(memory.get('/play/tt2'), undefined)
 })
 
+test('relay memory only forgets a play when it still holds one of the URLs that failed', () => {
+  const memory = new RelayMemory(1000)
+  memory.set('/play/tt1', 'http://aiostreams:3000/api/v1/usenet/stream/new')
+  // A parallel request stored a newer URL; a failure of the old one must not erase it.
+  assert.equal(memory.deleteIfHolding('/play/tt1', ['http://aiostreams:3000/api/v1/usenet/stream/old']), false)
+  assert.equal(memory.get('/play/tt1'), 'http://aiostreams:3000/api/v1/usenet/stream/new')
+  assert.equal(memory.deleteIfHolding('/play/tt1', ['http://aiostreams:3000/api/v1/usenet/stream/new']), true)
+  assert.equal(memory.get('/play/tt1'), undefined)
+  // Nothing remembered: the caller may clear what depends on it.
+  assert.equal(memory.deleteIfHolding('/play/tt2', ['x']), true)
+})
+
 // A bare fastify app whose one route relays to the given candidates, so the
 // tests exercise relayStream the way the /play routes call it.
 async function relayApp(candidates: string[], extra: Partial<RelayOptions> = {}) {
   const warnings: string[] = []
   const relayed: string[] = []
   let failed = 0
+  const tried: string[][] = []
   const app: FastifyInstance = Fastify()
   app.get('/play/tt0111161', (req, reply) => relayStream(req, reply, candidates, {
     log: { warn: message => { warnings.push(message) } },
     label: 'tt0111161',
     onRelayed: url => { relayed.push(url) },
-    onFailed: () => { failed++ },
+    onFailed: urls => { failed++; tried.push([...urls]) },
     ...extra,
   }))
-  return { app, warnings, relayed, failures: () => failed }
+  return { app, warnings, relayed, failures: () => failed, tried }
 }
 
 test('a range request is passed through with the upstream status, headers and bytes', async t => {
@@ -153,6 +166,17 @@ test('when every candidate fails the viewer gets a 502 and the log names no toke
   assert.ok(!warnings[0].includes('/api/v1/usenet/stream/'), warnings[0])
 })
 
+test('a failure tells the caller which URLs it tried', async t => {
+  const upstream = await startFakeAiostreams()
+  t.after(() => upstream.close())
+  const urls = [`${upstream.origin}/api/v1/usenet/stream/gone`, `${upstream.origin}/api/v1/usenet/stream/error`]
+  const { app, tried } = await relayApp(urls)
+  t.after(() => app.close())
+  const res = await app.inject({ method: 'GET', url: '/play/tt0111161' })
+  assert.equal(res.statusCode, 502)
+  assert.deepEqual(tried, [urls])
+})
+
 test('a viewer who disconnects cancels the upstream read', async t => {
   const upstream = await startFakeAiostreams()
   t.after(() => upstream.close())
@@ -177,4 +201,25 @@ test('a viewer who disconnects cancels the upstream read', async t => {
     new Promise<boolean>(resolve => setTimeout(() => resolve(false), 3000)),
   ])
   assert.equal(closed, true, 'the upstream stream was still open 3 s after the viewer left')
+})
+
+test('a viewer who leaves before the upstream answers is not a relay failure', async t => {
+  const upstream = await startFakeAiostreams()
+  t.after(() => upstream.close())
+  const { app, warnings, failures } = await relayApp([`${upstream.origin}/api/v1/usenet/stream/slow`])
+  t.after(() => app.close())
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const address = app.server.address()
+  assert.ok(address && typeof address !== 'string')
+  await new Promise<void>(resolve => {
+    const req = request({ host: '127.0.0.1', port: address.port, path: '/play/tt0111161' })
+    req.on('error', () => resolve())
+    req.end()
+    setTimeout(() => { req.destroy(); resolve() }, 100)
+  })
+  // Give the relay time to see the abort and to finish whatever it does next.
+  await new Promise(resolve => setTimeout(resolve, 700))
+  assert.equal(upstream.requests.length, 1)
+  assert.equal(failures(), 0)
+  assert.deepEqual(warnings, [])
 })

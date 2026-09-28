@@ -60,6 +60,17 @@ export class RelayMemory {
   delete(key: string): void {
     this.entries.delete(key)
   }
+
+  // Forget a play only while it still holds one of these URLs, so a request
+  // that failed cannot erase a URL a parallel request has just stored. True
+  // when the play is now forgotten, or was never remembered.
+  deleteIfHolding(key: string, urls: readonly string[]): boolean {
+    const current = this.get(key)
+    if (current === undefined) return true
+    if (!urls.includes(current)) return false
+    this.entries.delete(key)
+    return true
+  }
 }
 
 export interface RelayOptions {
@@ -70,8 +81,8 @@ export interface RelayOptions {
   fetchImpl?: typeof fetch
   // The candidate that answered, so the caller can remember it.
   onRelayed?: (url: string) => void
-  // No candidate answered with 200 or 206.
-  onFailed?: () => void
+  // No candidate answered with 200 or 206. Gets the URLs that were tried.
+  onFailed?: (tried: readonly string[]) => void
 }
 
 const FORWARDED_REQUEST_HEADERS = ['range', 'if-range'] as const
@@ -138,7 +149,13 @@ export async function relayStream(
     return reply.send(Readable.fromWeb(res.body as WebReadableStream<Uint8Array>))
   }
 
-  options.onFailed?.()
+  if (controller.signal.aborted) {
+    // The viewer left before the upstream answered, which a player does all
+    // the time while seeking. Nothing failed, so the play keeps its memory and
+    // nothing is logged; nobody is left to read the response either.
+    return reply.code(502).send()
+  }
+  options.onFailed?.(candidates)
   options.log.warn(`playback: relay failed for ${options.label}: ${problem}`)
   return reply.code(502).send({ error: 'Stream relay failed' })
 }
