@@ -363,3 +363,27 @@ test('each version lists the track made for its own file first, and serves it at
     assert.match(res.body, new RegExp(`file /${file.replace('.', '\\.')}`), id)
   }
 })
+
+test('the subtitle log line names the version the file was fetched for', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const tracks: SubtitleTrack[] = [{ id: '1-a', url: `${host.base}/a.srt`, lang: 'eng', label: 'English 1', format: 'srt', release: '' }]
+  const lines: string[] = []
+  const app = Fastify({ ...PRODUCTION_ROUTER_OPTIONS, logger: { level: 'info', stream: { write: (line: string) => { lines.push(line) } } } } as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: async () => tracks, fetchSubtitleFile } as never)
+  t.after(() => app.close())
+  const token = `${'e'.repeat(8)}${'f'.repeat(24)}`
+  const messages = async (sourceId: string) => {
+    lines.length = 0
+    const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${sourceId}/Subtitles/2/0/Stream.srt` })
+    assert.equal(res.statusCode, 200, sourceId)
+    return lines.map(line => String(JSON.parse(line).msg)).filter(msg => msg.startsWith('playback: subtitle '))
+  }
+
+  const [candidate] = await messages(`${MOVIE_ITEM}:candidate:${token}`)
+  assert.match(candidate, / version eeeeeeee /)
+  // A whole candidate token lets a player without an account stream that version.
+  assert.ok(!candidate.includes(token), candidate)
+  const [plain] = await messages(MOVIE_ITEM)
+  assert.match(plain, new RegExp(` version ${MOVIE_ITEM} `))
+})
