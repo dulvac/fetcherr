@@ -45,6 +45,7 @@ const tmdb = await startFakeTmdb({
     { id: 5301, name: 'Monkey Island', imdb: 'tt5301' },
     { id: 69740, name: 'Ozark', imdb: 'tt5071412', first_air_date: '2017-07-21' },
     { id: 5401, name: 'Spiral', original_name: 'Engrenages', imdb: 'tt5401', first_air_date: '2005-12-13' },
+    { id: 5601, name: 'Kaamelott', imdb: 'tt5601', first_air_date: '2005-01-03' },
   ],
 })
 const cinemeta = installFakeCinemeta({
@@ -58,6 +59,10 @@ const cinemeta = installFakeCinemeta({
         { id: 'tt4063800:1:2', season: 1, episode: 2, name: 'Episode 2', released: '2015-05-04T00:00:00.000Z' },
         { id: 'tt4063800:2:1', season: 2, episode: 1, name: 'Episode 1', released: '2016-05-02T00:00:00.000Z' },
       ],
+    },
+    tt5601: {
+      id: 'tt5601', type: 'series', name: 'Kaamelott',
+      videos: [{ id: 'tt5601:1:1', season: 1, episode: 1, name: 'Episode 1', released: '2005-01-03T00:00:00.000Z' }],
     },
   },
 })
@@ -298,6 +303,18 @@ test('a movie found through TMDB opens and plays by its IMDb id', async () => {
   assert.deepEqual(registered, [[movie.Id, '/play/tt30000001']])
   // Opening it fetched the full record once; playing it read that record back.
   assert.deepEqual(tmdb.requests.filter(r => r.scope === 'movie-details').map(r => r.path), ['/movie/1365884'])
+})
+
+test('each keystroke of a series search reuses the episodes already fetched', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  configure()
+  const metaFetches = () => cinemeta.requests.filter(path => path === '/meta/series/tt5601.json').length
+  for (const term of ['Kaam', 'Kaame', 'Kaamel', 'Kaamelott']) assert.deepEqual(names(await search(term, 'Series')), ['Kaamelott'])
+  assert.equal(metaFetches(), 1)
+  // Kept ten minutes, so new episodes still show up.
+  t.mock.timers.tick(10 * 60 * 1000)
+  await search('Kaamelott', 'Series')
+  assert.equal(metaFetches(), 2)
 })
 
 test('a slow TMDB costs one timeout, then Cinemeta answers', async t => {
