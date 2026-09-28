@@ -46,6 +46,21 @@ test('release names give up their resolution, source and group', () => {
   for (const [name, expected] of cases) assert.deepEqual(releaseTags(name), expected, name)
 })
 
+test('a resolution after the last hyphen is never a group', () => {
+  // A version whose file name is unknown is read from its stream title, which
+  // often ends in the resolution alone.
+  const cases: Array<[string, ReturnType<typeof releaseTags>]> = [
+    ['The.Jetsons.S01E01.WEBRip-1080p', { resolution: '1080p', family: 'web', source: 'WEBRip', group: null }],
+    ['The Jetsons S01E01 HDTV-720P', { resolution: '720p', family: 'hdtv', source: 'HDTV', group: null }],
+    ['Movie.2019.WEB-4K', { resolution: '2160p', family: 'web', source: 'WEB', group: null }],
+    ['Movie.2019.BluRay-UHD', { resolution: '2160p', family: 'bluray', source: 'BluRay', group: null }],
+    ['Movie.2019.DVDRip-480p', { resolution: '480p', family: 'dvd', source: 'DVDRip', group: null }],
+  ]
+  for (const [name, expected] of cases) assert.deepEqual(releaseTags(name), expected, name)
+  // Two releases that only share a resolution score for the resolution alone.
+  assert.equal(matchScore('Show.S01E01.HDTV-1080p', 'Show.S01E01.WEB-DL-1080p.mkv'), 1)
+})
+
 test('a release is labelled by its tags, or by its name when it has none', () => {
   assert.equal(releaseLabel('Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV'), '720p WEB-DL myTV')
   assert.equal(releaseLabel('Monk S01E01E02 Mr. Monk and the Candidate Part 1_2.DVDRip.NonHI.en.UNIV'), 'DVDRip')
