@@ -17,7 +17,7 @@ process.env.TVDB_API_KEY = ''
 const db = await import('../src/db.js')
 const { config } = await import('../src/config.js')
 const { clearSubtitleCache, fetchSubtitles, fetchSubtitleFile } = await import('../src/subtitles.js')
-const { clearGestdownCache } = await import('../src/gestdown.js')
+const { clearGestdownCache, fetchGestdownSubtitles } = await import('../src/gestdown.js')
 const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/index.js')
 const { releaseTags, releaseLabel } = await import('../src/subtitle-rank.js')
 
@@ -173,6 +173,34 @@ test('a show Cinemeta cannot place, or that Gestdown has never heard of, is cach
   assert.equal(unknownShow.calls(), 1)
   assert.equal(fake.showRequests.length, 1)
   unknownShow.restore()
+})
+
+test('a Cinemeta failure is asked again on the next lookup, not cached as absent for a day', async t => {
+  const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
+  t.after(() => fake.close())
+  fake.setLanguage(GUID, 1, 1, 'en', { entries: [LIBERTY_ENTRY] })
+  configure({ gestdownBaseUrl: fake.url })
+
+  // fetchGestdownSubtitles taken directly, with a private onFailure, rather than
+  // through fetchSubtitles: subtitles.ts logs every Gestdown failure under one
+  // throttled key shared with the 429 and 423 tests below, so console.warn is
+  // not a reliable place to observe one specific failure in this file.
+  const failures: unknown[] = []
+  const failing = stubCinemeta(() => ({ status: 503 }))
+  const empty = await fetchGestdownSubtitles(`${IMDB_ID}:1:1`, ['eng'], reason => failures.push(reason))
+  assert.deepEqual(empty, [])
+  assert.equal(failures.length, 1)
+  assert.match(String((failures[0] as Error).message), /Cinemeta/)
+  assert.equal(fake.showRequests.length, 0, 'a Cinemeta failure never reaches the show lookup')
+  failing.restore()
+
+  // Not cached: the very next lookup, still within the same 24h window, reaches
+  // Cinemeta and the show lookup again instead of reusing the failed attempt.
+  const recovered = stubCinemeta(() => ({ status: 200, meta: { id: IMDB_ID, tvdb_id: TVDB_ID } }))
+  t.after(recovered.restore)
+  const tracks = await fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  assert.deepEqual(tracks.map(track => track.id), ['1-f8aac9db-d4ad-4b7a-bb8c-89513e603e9d'])
+  assert.equal(fake.showRequests.length, 1, 'the recovered lookup reaches the show lookup')
 })
 
 test('a 429 on the show lookup gives nothing, logs once, and is not cached', async t => {
