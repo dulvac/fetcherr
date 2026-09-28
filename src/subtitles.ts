@@ -39,13 +39,17 @@ const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
 // into a URL path, so nothing else gets through.
 const EXTERNAL_ID = /^tt\d{7,10}(?::\d{1,4}:\d{1,4})?$/
 const FORMATS = new Set(['srt', 'vtt', 'ass', 'ssa', 'sub'])
+// Kept per language before any version is looked at: enough for each version to
+// find the file made for it, while subtitleMaxPerLanguage is how many each
+// version then shows.
+export const SUBTITLE_POOL_PER_LANGUAGE = 10
 
 type CacheEntry = { promise: Promise<SubtitleTrack[]>; expiresAt: number }
 const cache = new Map<string, CacheEntry>()
 const lastFailureLogAt = new Map<string, number>()
 
-// Called on every settings save: cached answers were filtered and capped under
-// the old values, and a newly named provider should count on the next play.
+// Called on every settings save: cached answers were filtered under the old
+// languages, and a newly named provider should count on the next play.
 export function clearSubtitleCache(): void {
   cache.clear()
 }
@@ -93,7 +97,7 @@ async function fetchUncached(mediaType: StremioMediaType, externalId: string, ex
       logFailure(bases[idx], providerLabel(bases[idx], idx), path, result.reason)
       return []
     })
-    return selectTracks(answers, config.subtitleLanguages, config.subtitleMaxPerLanguage)
+    return selectTracks(answers, config.subtitleLanguages)
   } catch (err) {
     console.warn(`subtitles: lookup failed for ${mediaType} ${externalId}: ${err instanceof Error ? err.message : String(err)}`)
     return []
@@ -190,10 +194,10 @@ function releaseOf(entry: RawSubtitle): string {
 }
 
 // Filter to the configured languages, collapse the same URL offered twice, keep
-// provider order and then each provider's own order within a language, and cap.
-// Languages come out in the configured order, or in order of first appearance
-// when there is no filter.
-function selectTracks(answers: RawSubtitle[][], languages: readonly string[], maxPerLanguage: number): SubtitleTrack[] {
+// provider order and then each provider's own order within a language, and keep
+// the pool. Languages come out in the configured order, or in order of first
+// appearance when there is no filter.
+function selectTracks(answers: RawSubtitle[][], languages: readonly string[]): SubtitleTrack[] {
   const byLanguage = new Map<string, SubtitleTrack[]>()
   const seenUrls = new Set<string>()
   for (const [providerIdx, entries] of answers.entries()) {
@@ -205,7 +209,7 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
       const format = formatOf(url, entry.subtitleFileName)
       // MicroDVD counts frames and VobSub is images that need an .idx beside
       // them; neither plays reliably as an external text track, and skipping
-      // them here lets the cap fill with files that do.
+      // them here lets the pool fill with files that do.
       if (format === 'sub') continue
       if (seenUrls.has(url)) continue
       seenUrls.add(url)
@@ -214,7 +218,7 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
         list = []
         byLanguage.set(lang, list)
       }
-      if (list.length >= maxPerLanguage) continue
+      if (list.length >= SUBTITLE_POOL_PER_LANGUAGE) continue
       const ownId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : String(entryIdx)
       list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format, release: releaseOf(entry) })
     }

@@ -24,7 +24,7 @@ import type { Movie, Show, Season, Episode } from '../db.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
-import { attachSubtitleStreams, parsePlayPath, subtitleContentType, subtitleTrackAtIndex } from '../subtitle-streams.js'
+import { attachSubtitleStreams, parsePlayPath, subtitleContentType, subtitleTrackForSource } from '../subtitle-streams.js'
 import type { SubtitleFile, SubtitleTrack } from '../subtitles.js'
 import { rankSearchResults } from '../search-rank.js'
 import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
@@ -170,6 +170,10 @@ type JellyfinRouteOptions = {
   // Fetches a subtitle file for players that only take subtitles from this server.
   // Optional, like lookupSubtitles; without it the subtitle route answers 404.
   fetchSubtitleFile?: (url: string) => Promise<SubtitleFile | null>
+  // The file a media source plays, when it is known. Versions built from a
+  // remembered candidate know theirs, and subtitles made for that release are
+  // listed first. Optional; without it every version keeps the provider order.
+  fileNameForMediaSource?: (mediaSourceId: string) => string | null
 }
 type ImageKind = 'poster' | 'backdrop' | 'logo' | 'profile'
 type ImageQuery = {
@@ -3167,7 +3171,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       origin: buildPlaybackOrigin(normalizedHeaders),
       playbackClient: playbackClientFromHeaders(headers),
     })
-    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, requestUser(headers)?.subtitleLanguage ?? '', input.itemId)
+    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, requestUser(headers)?.subtitleLanguage ?? '', input.itemId, subtitleOptions())
     return {
       ...item,
       MediaSources: mediaSources,
@@ -3848,6 +3852,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       })
   }
 
+  // Read at each call, so a settings save applies to the next play.
+  function subtitleOptions() {
+    return {
+      perLanguage: config.subtitleMaxPerLanguage,
+      fileNameFor: (source: Record<string, unknown>) => opts.fileNameForMediaSource?.(String(source.Id ?? '')) ?? null,
+    }
+  }
+
   // Playback — handles both movies and episodes
   async function handlePlaybackInfo(
     req: { params: { id: string }; headers: Record<string, string> },
@@ -3886,7 +3898,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, name)
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id, subtitleOptions())
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3921,7 +3933,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, name)
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id, subtitleOptions())
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -3967,7 +3979,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, `${show.title} ${label}`)
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id, subtitleOptions())
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -4004,7 +4016,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
       opts.prewarmPlayback?.(playPath, movie.title)
-      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id)
+      const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id, subtitleOptions())
       return {
         MediaSources: mediaSources,
         AlternateMediaSources: mediaSources,
@@ -4041,7 +4053,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)
     opts.prewarmPlayback?.(playPath, movie.title)
-    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id)
+    const mediaSources = attachSubtitleStreams(baseSources, await subtitles, user.subtitleLanguage, id, subtitleOptions())
     return {
       MediaSources: mediaSources,
       AlternateMediaSources: mediaSources,
@@ -4177,7 +4189,10 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (!Number.isInteger(streamIndex)) return reply.code(404).send({ error: 'Not found' })
     const resolved = await playPathForUser(id, user)
     if (!('playPath' in resolved)) return reply.code(404).send({ error: 'Not found' })
-    const track = subtitleTrackAtIndex(await subtitlesFor(resolved.playPath), streamIndex)
+    const track = subtitleTrackForSource(await subtitlesFor(resolved.playPath), mediaSourceId, streamIndex, {
+      perLanguage: config.subtitleMaxPerLanguage,
+      fileName: opts.fileNameForMediaSource?.(mediaSourceId) ?? null,
+    })
     if (!track) return reply.code(404).send({ error: 'Not found' })
     const file = opts.fetchSubtitleFile ? await opts.fetchSubtitleFile(track.url) : null
     // One line per file, naming the client, because which player asks for what
