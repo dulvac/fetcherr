@@ -172,20 +172,30 @@ function usableUrl(value: unknown): string | null {
   return parsed.href
 }
 
+// Checks, in order: an explicit file name's trailing extension, then the URL
+// path's trailing extension, then a .vtt path segment that is not the path's
+// end — OpenSubtitles v3+ serves subtitles at paths like
+// /sub.vtt/?lang_code=en&sub_id=5467612.
 function formatOf(url: string, fileName: unknown): string {
-  for (const candidate of [typeof fileName === 'string' ? fileName : '', new URL(url).pathname]) {
+  const pathname = new URL(url).pathname
+  for (const candidate of [typeof fileName === 'string' ? fileName : '', pathname]) {
     const extension = candidate.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
     if (extension && FORMATS.has(extension)) return extension
   }
+  if (pathname.toLowerCase().split('/').some(segment => segment.endsWith('.vtt'))) return 'vtt'
   return 'srt'
 }
 
-// OpenSubtitles names the release in movieReleaseName. Its file name usually
-// repeats it, so that stands in when the release name is missing.
+// The release name, read from the first field that has one: movieReleaseName
+// (OpenSubtitles v3), releaseName (SubSense) or title (OpenSubtitles v3+, which
+// has neither of the other two). When none does, it is guessed from a file name
+// that usually repeats it: subtitleFileName (OpenSubtitles v3) or fileName
+// (SubSense), with its extension removed.
 function releaseOf(entry: RawSubtitle): string {
-  const named = typeof entry.movieReleaseName === 'string' ? entry.movieReleaseName.trim() : ''
+  const text = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
+  const named = text(entry.movieReleaseName) || text(entry.releaseName) || text(entry.title)
   if (named) return named
-  const fileName = typeof entry.subtitleFileName === 'string' ? entry.subtitleFileName.trim() : ''
+  const fileName = text(entry.subtitleFileName) || text(entry.fileName)
   return fileName.replace(/\.(?:srt|vtt|ass|ssa|sub|smi|txt)$/i, '')
 }
 
@@ -202,7 +212,7 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[]): S
       const lang = normalizeSubtitleLanguage(entry.lang)
       if (!url || !lang) continue
       if (languages.length && !languages.includes(lang)) continue
-      const format = formatOf(url, entry.subtitleFileName)
+      const format = formatOf(url, typeof entry.subtitleFileName === 'string' ? entry.subtitleFileName : entry.fileName)
       // MicroDVD counts frames and VobSub is images that need an .idx beside
       // them; neither plays reliably as an external text track, and skipping
       // them here lets the pool fill with files that do.
