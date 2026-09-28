@@ -42,6 +42,7 @@ test('the defaults are English only, three per language, and no named providers'
   assert.equal(settings.subtitleLanguages, 'eng')
   assert.equal(settings.subtitleMaxPerLanguage, 3)
   assert.equal(settings.subtitleProviderUrls, '')
+  assert.equal(settings.subtitleGestdown, false)
   assert.deepEqual(settings.subtitleLanguageOptions, [{ code: 'eng', name: 'English' }])
   await app.close()
 })
@@ -100,6 +101,21 @@ test('subtitle provider URLs are cleaned like stream provider URLs', async () =>
   assert.deepEqual(config.subtitleProviderUrls, ['https://opensubtitles-v3.strem.io', 'https://other.example'])
   assert.equal(db.getSetting('subtitleProviderUrls'), 'https://opensubtitles-v3.strem.io\nhttps://other.example')
   assert.equal((await read(app)).subtitleProviderUrls, 'https://opensubtitles-v3.strem.io\nhttps://other.example')
+  await app.close()
+})
+
+test('turning on Gestdown stores it, applies it, and is reported back', async () => {
+  const app = await buildApp()
+  assert.equal(config.subtitleGestdown, false)
+  const res = await save(app, { subtitleGestdown: true })
+  assert.equal(res.statusCode, 200)
+  assert.equal(db.getSetting('subtitleGestdown'), 'true')
+  assert.equal(config.subtitleGestdown, true)
+  assert.equal((await read(app)).subtitleGestdown, true)
+
+  await save(app, { subtitleGestdown: false })
+  assert.equal(db.getSetting('subtitleGestdown'), 'false')
+  assert.equal(config.subtitleGestdown, false)
   await app.close()
 })
 

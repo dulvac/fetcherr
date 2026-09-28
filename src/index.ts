@@ -118,6 +118,7 @@ getDb()
   if (s.subtitleProviderUrls != null) config.subtitleProviderUrls = parseStreamProviderUrls(s.subtitleProviderUrls)
   if (s.subtitleLanguages != null) config.subtitleLanguages = parseSubtitleLanguageSetting(s.subtitleLanguages)
   if (s.subtitleMaxPerLanguage != null) config.subtitleMaxPerLanguage = parseSubtitleMaxPerLanguage(s.subtitleMaxPerLanguage)
+  if (s.subtitleGestdown != null) config.subtitleGestdown = parseBooleanSetting(s.subtitleGestdown, false)
   // Only fall back to env-var URLs if user has never saved add-ons via the UI.
   // Once s.streamProviderUrls is set (even to ''), DB is authoritative and env var
   // should not re-add URLs the user explicitly removed.

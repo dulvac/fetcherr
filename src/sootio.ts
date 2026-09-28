@@ -36,6 +36,8 @@ export interface StremioMeta {
   year?: string | number
   imdb_id?: string
   imdbId?: string
+  // Read by gestdown.ts: Gestdown knows shows by TVDB id, not IMDb id.
+  tvdb_id?: number | string
   runtime?: string
   released?: string
   videos?: StremioMeta[]

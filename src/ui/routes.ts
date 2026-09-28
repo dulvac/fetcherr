@@ -822,6 +822,7 @@ export async function uiRoutes(app: FastifyInstance) {
       subtitleLanguages: config.subtitleLanguages.join(', '),
       subtitleMaxPerLanguage: config.subtitleMaxPerLanguage,
       subtitleLanguageOptions: subtitlePreferenceOptions(config.subtitleLanguages),
+      subtitleGestdown: config.subtitleGestdown,
       serverUrl:         config.serverUrl,
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
@@ -1011,6 +1012,11 @@ export async function uiRoutes(app: FastifyInstance) {
       const cap = parseSubtitleMaxPerLanguage(String(body.subtitleMaxPerLanguage))
       setSetting('subtitleMaxPerLanguage', String(cap))
       config.subtitleMaxPerLanguage = cap
+    }
+    if (body.subtitleGestdown != null) {
+      const enabled = parseBooleanSetting(String(body.subtitleGestdown), false)
+      setSetting('subtitleGestdown', enabled ? 'true' : 'false')
+      config.subtitleGestdown = enabled
     }
     // On every save, not only when a subtitle field changed: with no subtitle
     // providers named, the stream providers saved above are the subtitle source.

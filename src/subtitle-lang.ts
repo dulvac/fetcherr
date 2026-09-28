@@ -109,6 +109,16 @@ export function subtitleLanguageName(code: string): string {
   return NAME_BY_CODE.get(code) ?? code
 }
 
+// Gestdown, like most subtitle sites, asks for a language by its ISO 639-1 code
+// rather than the 639-2/B code the rest of fetcherr speaks. The first two-letter
+// alias is that code for every language above; a language with none (there is
+// none today, but a future addition might lack one) is simply not asked.
+export function subtitleLanguageTwoLetter(code: string): string | null {
+  const language = SUBTITLE_LANGUAGES.find(candidate => candidate.code === code)
+  if (!language) return null
+  return language.aliases.find(alias => alias.length === 2) ?? null
+}
+
 // The choices offered for an account's preferred language. With no language
 // filter any language can arrive, so then every known one is offered.
 export function subtitlePreferenceOptions(languages: readonly string[]): Array<{ code: string; name: string }> {

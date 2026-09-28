@@ -1,4 +1,5 @@
 import { config, SUBTITLE_POOL_PER_LANGUAGE } from './config.js'
+import { fetchGestdownSubtitles } from './gestdown.js'
 import { fetchManifest, providerBases, providerLabel, type StremioManifest, type StremioMediaType } from './sootio.js'
 import { normalizeSubtitleLanguage, subtitleLanguageName } from './subtitle-lang.js'
 import { stripAdCues } from './subtitle-clean.js'
@@ -84,14 +85,24 @@ export async function fetchSubtitles(
 async function fetchUncached(mediaType: StremioMediaType, externalId: string, extra?: SubtitleExtra): Promise<SubtitleTrack[]> {
   try {
     const { bases, checkManifest } = subtitleProviders()
-    if (!bases.length) return []
+    if (!bases.length && !config.subtitleGestdown) return []
     const path = requestPath(mediaType, externalId, extra)
     const timeoutMs = config.subtitleTimeoutMs
-    const settled = await Promise.allSettled(bases.map(base =>
-      withDeadline(fetchFromProvider(base, path, checkManifest, timeoutMs), timeoutMs)))
+    // Gestdown is one more answer, after every configured or discovered
+    // provider: it goes through the same deadline and lands at bases.length + 1,
+    // whether or not any provider is named. It ignores extra (a hash lookup):
+    // it has no file hash of its own to match against.
+    const settled = await Promise.allSettled([
+      ...bases.map(base => withDeadline(fetchFromProvider(base, path, checkManifest, timeoutMs), timeoutMs)),
+      ...(config.subtitleGestdown
+        ? [withDeadline(fetchGestdownSubtitles(externalId, config.subtitleLanguages, reason => logFailure('gestdown', 'Gestdown', path, reason)), timeoutMs)]
+        : []),
+    ])
     const answers = settled.map((result, idx) => {
       if (result.status === 'fulfilled') return result.value
-      logFailure(bases[idx], providerLabel(bases[idx], idx), path, result.reason)
+      const isGestdown = config.subtitleGestdown && idx === bases.length
+      if (isGestdown) logFailure('gestdown', 'Gestdown', path, result.reason)
+      else logFailure(bases[idx], providerLabel(bases[idx], idx), path, result.reason)
       return []
     })
     return selectTracks(answers, config.subtitleLanguages)
