@@ -44,6 +44,9 @@ const BRACKETED_SUFFIX = /\s*(?:\[[^\]]*\]|\([^)]*\))\s*$/
 // 2 to 12 letters or digits after the last hyphen. At least one letter, so an
 // episode range like S01E01-02 is not read as a group.
 const GROUP = /-(?=[A-Za-z0-9]*[A-Za-z])([A-Za-z0-9]{2,12})$/
+// A stream title often ends in its resolution, as in WEBRip-1080p. Two files
+// that share only a resolution would otherwise score as the same group.
+const RESOLUTION_WORD = /^(?:\d{3,4}p|4k|uhd)$/i
 
 export function releaseTags(text: string): ReleaseTags {
   const input = asText(text)
@@ -59,7 +62,8 @@ export function releaseTags(text: string): ReleaseTags {
   while (BRACKETED_SUFFIX.test(rest)) rest = rest.replace(BRACKETED_SUFFIX, '')
   // WEB-DL at the very end is a source, not a group called DL.
   const endsInSource = source !== null && source.includes('-') && rest.toLowerCase().endsWith(source.toLowerCase())
-  const group = endsInSource ? null : rest.match(GROUP)?.[1] ?? null
+  const tail = endsInSource ? null : rest.match(GROUP)?.[1] ?? null
+  const group = tail && !RESOLUTION_WORD.test(tail) ? tail : null
 
   return { resolution, family, source, group }
 }
