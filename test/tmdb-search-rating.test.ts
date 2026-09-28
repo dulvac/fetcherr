@@ -37,8 +37,17 @@ const ratedMovies: FakeTmdbMovie[] = [
   { id: 6200, title: 'Rated', imdb: 'tt6200', certification: 'PG' },
 ]
 const ratedSeries: FakeTmdbSeries[] = Array.from({ length: 20 }, (_, i) => ({ id: 6301 + i, name: `Rated Show ${i + 1}`, imdb: `tt${6301 + i}` }))
+// Forty exact matches, so all forty pass the title-match rank and all forty
+// need a rating check: nothing here should ever wait behind more than nine others.
+const throttledMovies: FakeTmdbMovie[] = Array.from({ length: 40 }, (_, i) => ({
+  id: 6401 + i, title: 'Throttled', imdb: `tt${6401 + i}`, certification: 'PG',
+}))
 
-const tmdb = await startFakeTmdb({ movies: [...heistMovies, ...ratedMovies], series: [...heistSeries, ...ratedSeries] })
+const tmdb = await startFakeTmdb({
+  movies: [...heistMovies, ...ratedMovies, ...throttledMovies], series: [...heistSeries, ...ratedSeries],
+  // Fast enough to stay inside the search timeout below, slow enough to force overlap.
+  slowMs: 40,
+})
 // No metas: series keep the name TMDB gave them.
 const cinemeta = installFakeCinemeta()
 test.after(async () => {
@@ -113,4 +122,16 @@ test('rating checks stop at the 40 best title matches', async () => {
   const shown = new Set(items.map(item => item.Name))
   assert.ok(shown.has('Rated Show 9') && !shown.has('Rated Show 10'), 'the cap is not where the title ranking puts it')
   assert.equal(tmdb.count('movie-details'), 31)
+})
+
+test('forty rating checks for a limited account never have more than ten requests open at the fake TMDB', async () => {
+  tmdb.setMode('movie-details', 'slow')
+  let items: Array<Record<string, unknown>>
+  try {
+    items = await search('throttled', tokens.teen)
+  } finally {
+    tmdb.setMode('movie-details', 'answers')
+  }
+  assert.equal(items.length, 40)
+  assert.ok(tmdb.maxInFlight() <= 10, `expected at most 10 requests in flight, saw ${tmdb.maxInFlight()}`)
 })

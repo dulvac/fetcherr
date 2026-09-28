@@ -384,6 +384,23 @@ function endTurn(): void {
   if (next >= 0) waitingForTurn.splice(next, 1)[0].start()
 }
 
+// Rating checks for a limited account reach TMDB through src/tmdb.ts, outside
+// this module. They take turns from the same budget, so one kids account typing
+// a title cannot outrun the limit every other search keeps to. The priority is
+// fixed and lower than any search's, so a lookup always goes first when both are
+// waiting. `work` must not itself take a turn: nothing it reaches may call
+// tmdbSearchGet, or it would wait behind a turn it is holding.
+const RATING_CHECK_PRIORITY = 0
+
+export async function withTmdbTurn<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T | null> {
+  if (!await takeTurn(signal, RATING_CHECK_PRIORITY)) return null
+  try {
+    return await work()
+  } finally {
+    endTurn()
+  }
+}
+
 function searchFailed(reason: unknown): void {
   if (reason instanceof NoTurnInTime) logFailure(reason)
   else rest(reason)
