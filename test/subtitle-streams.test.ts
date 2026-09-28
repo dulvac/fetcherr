@@ -71,7 +71,7 @@ test('subtitle streams follow the existing streams and point at this server', ()
     IsExternal: true, IsTextSubtitleStream: true, SupportsExternalStream: true,
     DeliveryMethod: 'External', DeliveryUrl: '/Videos/item-1/src/Subtitles/2/0/Stream.srt', IsExternalUrl: false, IsDefault: false,
     Title: 'English 1', IsForced: false, IsHearingImpaired: false, TimeBase: '1/1000', Level: 0,
-    Path: '/fetcherr/subtitles/item-1/2.eng.srt',
+    Path: '/fetcherr/subtitles/item-1/2/English 1.eng.srt',
     LocalizedUndefined: 'Undefined', LocalizedDefault: 'Default', LocalizedForced: 'Forced',
     LocalizedExternal: 'External', LocalizedHearingImpaired: 'Hearing Impaired',
   })
@@ -94,6 +94,38 @@ test('each subtitle stream names the release its file was made for', () => {
     ['English 1 · 720p WEB-DL myTV', 'English 1 · 720p WEB-DL myTV'],
     ['English 2 · The Jetsons Complete Series', 'English 2 · The Jetsons Complete Series'],
     ['Romanian', 'Romanian'],
+  ])
+})
+
+test('the Path file name carries the DisplayTitle label VidHub reads track names from', () => {
+  const tracks: SubtitleTrack[] = [{ ...TRACKS[0], release: 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV' }]
+  const [out] = attachSubtitleStreams([source()], tracks, '', 'item-1', SHOW_THREE)
+  const [stream] = subtitleStreams(out)
+  assert.equal(stream.DisplayTitle, 'English · 720p WEB-DL myTV')
+  assert.equal(stream.Path, '/fetcherr/subtitles/item-1/2/English · 720p WEB-DL myTV.eng.srt')
+})
+
+test('a release with a slash or backslash keeps them out of the Path file name', () => {
+  const tracks: SubtitleTrack[] = [{ ...TRACKS[0], release: 'Team/Name\\Extra' }]
+  const [out] = attachSubtitleStreams([source()], tracks, '', 'item-1', SHOW_THREE)
+  const [stream] = subtitleStreams(out)
+  assert.equal(stream.DisplayTitle, 'English · Team/Name\\Extra')
+  assert.equal(stream.Path, '/fetcherr/subtitles/item-1/2/English · Team-Name-Extra.eng.srt')
+})
+
+test('two tracks ranked to the same release still get distinct paths, each at its own index', () => {
+  const tracks: SubtitleTrack[] = [
+    { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: '', format: 'vtt', release: 'Show.2160p.BDRip-Webhiker' },
+    { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: '', format: 'vtt', release: 'Show.2160p.BDRip-Webhiker' },
+  ]
+  const [out] = attachSubtitleStreams([source()], tracks, '', 'item-1', SHOW_THREE)
+  const streams = subtitleStreams(out)
+  assert.deepEqual(streams.map(stream => stream.DisplayTitle), [
+    'English 1 · 2160p BDRip Webhiker', 'English 2 · 2160p BDRip Webhiker',
+  ])
+  assert.deepEqual(streams.map(stream => stream.Path), [
+    '/fetcherr/subtitles/item-1/2/English 1 · 2160p BDRip Webhiker.eng.vtt',
+    '/fetcherr/subtitles/item-1/3/English 2 · 2160p BDRip Webhiker.eng.vtt',
   ])
 })
 
