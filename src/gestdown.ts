@@ -80,7 +80,15 @@ async function resolveShow(imdbId: string, onFailure: (reason: unknown) => void)
 
 async function lookupShow(imdbId: string, onFailure: (reason: unknown) => void): Promise<ShowState | 'failed'> {
   const meta = await fetchCinemetaMeta('series', imdbId)
-  const tvdbId = tvdbIdOf(meta?.tvdb_id)
+  // fetchCinemetaMeta turns a network error, a 5xx or its own timeout into null
+  // the same way it turns a real 404 into null, so null here is read as a
+  // failure of this attempt, not a fact about the show: it is logged and not
+  // cached, unlike a meta that names no usable tvdb_id.
+  if (meta === null) {
+    onFailure(new Error('no Cinemeta meta'))
+    return 'failed'
+  }
+  const tvdbId = tvdbIdOf(meta.tvdb_id)
   if (!tvdbId) return { status: 'absent' }
   return fetchShowState(tvdbId, onFailure)
 }
