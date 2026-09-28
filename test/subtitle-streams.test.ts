@@ -207,3 +207,10 @@ test('at most 5000 orders are remembered, the oldest dropped first', () => {
   assert.deepEqual(rememberedSubtitleOrder('many-1'), ['t1'])
   assert.deepEqual(rememberedSubtitleOrder('many-5000'), ['t5000'])
 })
+
+test('tracks built without a release still attach, labelled by language only', () => {
+  const bare = [{ id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English', format: 'srt' }] as never
+  const [out] = attachSubtitleStreams([source()], bare, '', 'item-1', { perLanguage: 3, fileNameFor: () => 'Show.S01E01.1080p.BluRay-GRP.mkv' })
+  const subtitle = (out.MediaStreams as Array<Record<string, unknown>>)[2]
+  assert.equal(subtitle.DisplayTitle, 'English')
+})

@@ -6,6 +6,13 @@
 export type SourceFamily = 'bluray' | 'web' | 'hdtv' | 'dvd'
 export interface ReleaseTags { resolution: string | null; family: SourceFamily | null; source: string | null; group: string | null }
 
+// Release names come from provider JSON and from callers that build tracks by
+// hand, so anything that is not a string reads as no release rather than
+// throwing into PlaybackInfo.
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
 // Every spelling of a source, by family. Releases from one family share their
 // cut and frame rate far more often than releases across families.
 const SOURCE_WORDS: Record<SourceFamily, readonly string[]> = {
@@ -39,15 +46,16 @@ const BRACKETED_SUFFIX = /\s*(?:\[[^\]]*\]|\([^)]*\))\s*$/
 const GROUP = /-(?=[A-Za-z0-9]*[A-Za-z])([A-Za-z0-9]{2,12})$/
 
 export function releaseTags(text: string): ReleaseTags {
-  const resolution = matches(text, RESOLUTION)[0]?.toLowerCase() ?? (matches(text, UHD).length ? '2160p' : null)
+  const input = asText(text)
+  const resolution = matches(input, RESOLUTION)[0]?.toLowerCase() ?? (matches(input, UHD).length ? '2160p' : null)
 
   // The last source word is the release's own: a title can contain one too, as
   // in Charlotte's Web, and titles come first.
-  const sources = matches(text, SOURCE)
+  const sources = matches(input, SOURCE)
   const source = sources.at(-1) ?? null
   const family = source ? FAMILY_BY_WORD.get(source.toLowerCase()) ?? null : null
 
-  let rest = text.trim().replace(EXTENSION, '')
+  let rest = input.trim().replace(EXTENSION, '')
   while (BRACKETED_SUFFIX.test(rest)) rest = rest.replace(BRACKETED_SUFFIX, '')
   // WEB-DL at the very end is a source, not a group called DL.
   const endsInSource = source !== null && source.includes('-') && rest.toLowerCase().endsWith(source.toLowerCase())
@@ -68,21 +76,24 @@ const WORD_BREAK = /[\s._-]/
 // "720p WEB-DL myTV". A release with no readable tags is shown by the start of
 // its name, which still tells two such files apart.
 export function releaseLabel(release: string): string {
-  const { resolution, source, group } = releaseTags(release)
+  const name = asText(release)
+  const { resolution, source, group } = releaseTags(name)
   const tags = [resolution, source, group].filter(Boolean)
   if (tags.length) return tags.join(' ')
-  const name = release.trim()
-  if (name.length <= FALLBACK_LABEL_LENGTH) return name
+  const trimmed = name.trim()
+  if (trimmed.length <= FALLBACK_LABEL_LENGTH) return trimmed
   let cut = FALLBACK_LABEL_LENGTH
-  while (cut > 0 && !WORD_BREAK.test(name[cut])) cut--
-  return (cut > 0 ? name.slice(0, cut) : name.slice(0, FALLBACK_LABEL_LENGTH)).replace(/[\s._-]+$/, '')
+  while (cut > 0 && !WORD_BREAK.test(trimmed[cut])) cut--
+  return (cut > 0 ? trimmed.slice(0, cut) : trimmed.slice(0, FALLBACK_LABEL_LENGTH)).replace(/[\s._-]+$/, '')
 }
 
 // The group counts most, since one group's files share one cut; then the source
 // family, whose releases usually share a frame rate; then the resolution.
 export function matchScore(release: string, fileName: string): number {
-  if (!release.trim() || !fileName.trim()) return 0
-  return scoreTags(releaseTags(release), releaseTags(fileName))
+  const releaseText = asText(release)
+  const fileNameText = asText(fileName)
+  if (!releaseText.trim() || !fileNameText.trim()) return 0
+  return scoreTags(releaseTags(releaseText), releaseTags(fileNameText))
 }
 
 function scoreTags(release: ReleaseTags, file: ReleaseTags): number {
@@ -107,7 +118,7 @@ export function rankForFile<T extends { lang: string; release: string }>(tracks:
     const ordered = file
       // Array sort is stable, so equal scores keep the provider's order.
       ? list
-        .map(track => ({ track, score: track.release.trim() ? scoreTags(releaseTags(track.release), file) : 0 }))
+        .map(track => ({ track, score: asText(track.release).trim() ? scoreTags(releaseTags(asText(track.release)), file) : 0 }))
         .sort((a, b) => b.score - a.score)
         .map(entry => entry.track)
       : list
