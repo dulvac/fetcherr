@@ -275,4 +275,10 @@ test('a slow TMDB costs one timeout, then Cinemeta answers', async t => {
   const started = Date.now()
   assert.deepEqual(names(await search('heat')), ['Heat', 'Heat of the Night', 'Heat Street'])
   assert.ok(Date.now() - started < 2000, `waited ${Date.now() - started} ms`)
+  // The next keystroke goes straight to Cinemeta rather than waiting again.
+  const searchesBefore = tmdb.requests.length
+  const next = Date.now()
+  assert.deepEqual(names(await search('hea')), ['Heat', 'Heat of the Night', 'Heat Street'])
+  assert.ok(Date.now() - next < 250, `waited ${Date.now() - next} ms`)
+  assert.equal(tmdb.requests.length, searchesBefore)
 })

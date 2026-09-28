@@ -88,6 +88,18 @@ test('any settings save drops cached TMDB answers', async t => {
   await app.close()
 })
 
+test('a settings save ends a rest, so a newly saved key is tried at once', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const fake = await startFakeTmdb({ movies: [{ id: 4002, title: 'Ronin', imdb: 'tt4002' }] })
+  t.after(() => fake.close())
+  Object.assign(config, { tmdbApiKey: 'not-the-key', tmdbBaseUrl: fake.url })
+  const app = await buildApp()
+  assert.equal((await findTmdbTitles('ronin', ['movie'])).movies, null)
+  await save(app, { tmdbApiKey: FAKE_TMDB_KEY })
+  assert.deepEqual((await findTmdbTitles('ronin', ['movie'])).movies?.map(m => m.tmdbId), [4002])
+  await app.close()
+})
+
 test('with the source set to tmdb, Stremio search and series metadata still read Cinemeta', async t => {
   const cinemeta = installFakeCinemeta()
   const previousProviders = config.streamProviderUrls
