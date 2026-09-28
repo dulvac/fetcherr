@@ -29,6 +29,21 @@ test('case, accents, punctuation and a leading article do not stop a match', () 
   assert.deepEqual(label(rankSearchResults(items, 'JETSONS')), ['Series:The Jetsons', 'Movie:Something Else', 'Movie:Amélie'])
 })
 
+test('a Thai original title holding one Latin word is not a false exact match', () => {
+  const items = [
+    { Name: 'Will You Marry Monk?', OriginalTitle: 'แต่ง…Monk', Type: 'Movie' },
+    { Name: 'Monk', Type: 'Movie' },
+  ]
+  assert.deepEqual(label(rankSearchResults(items, 'monk')), ['Movie:Monk', 'Movie:Will You Marry Monk?'])
+})
+
+test('a Romanian cedilla title and its comma-below spelling match each other', () => {
+  const cedilla = [{ Name: 'Moromeţii', Type: 'Movie' }]
+  const commaBelow = [{ Name: 'Moromeții', Type: 'Movie' }]
+  assert.deepEqual(label(rankSearchResults(cedilla, 'Moromeții')), ['Movie:Moromeţii'])
+  assert.deepEqual(label(rankSearchResults(commaBelow, 'Moromeţii')), ['Movie:Moromeții'])
+})
+
 test('a term that matches no title as a word leaves the order alone, and nothing is modified', () => {
   const items = [{ Name: 'Monkey Man', Type: 'Movie' }, { Name: 'Monk', Type: 'Series' }]
   const before = JSON.stringify(items)
