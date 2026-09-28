@@ -45,21 +45,74 @@ test('languages are folded, filtered to the configured list and grouped in its o
   assert.deepEqual(provider.requests, ['/subtitles/movie/tt0111161.json'])
 })
 
-test('each language keeps a pool of ten, in provider order and then the provider\'s own order', async t => {
-  const first = await startFakeSubtitleProvider({ subtitles: [sub('a1', 'eng'), sub('a2', 'eng')] })
-  const second = await startFakeSubtitleProvider({ subtitles: [sub('b1', 'eng'), sub('b2', 'fre')] })
-  const many = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 12 }, (_, i) => sub(`m${i + 1}`, 'eng')) })
-  t.after(() => Promise.all([first.close(), second.close(), many.close()]))
+test('each language\'s pool fills in rounds across providers, in provider order', async t => {
+  const a = await startFakeSubtitleProvider({ subtitles: [sub('a1', 'eng'), sub('a2', 'eng')] })
+  const b = await startFakeSubtitleProvider({ subtitles: [sub('b1', 'eng'), sub('b2', 'fre')] })
+  const c = await startFakeSubtitleProvider({ subtitles: [sub('c1', 'eng'), sub('c2', 'eng'), sub('c3', 'eng')] })
+  t.after(() => Promise.all([a.close(), b.close(), c.close()]))
 
   // How many each version shows is decided per version, later, so the setting
   // no longer cuts here.
-  configure({ subtitleProviderUrls: [first.url, second.url], subtitleMaxPerLanguage: 2 })
-  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a1', '1-a2', '2-b1', '2-b2'])
-
-  configure({ subtitleProviderUrls: [many.url] })
+  configure({ subtitleProviderUrls: [a.url, b.url, c.url], subtitleMaxPerLanguage: 2 })
   assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), [
-    '1-m1', '1-m2', '1-m3', '1-m4', '1-m5', '1-m6', '1-m7', '1-m8', '1-m9', '1-m10',
+    '1-a1', '2-b1', '3-c1', '1-a2', '3-c2', '3-c3', '2-b2',
   ])
+})
+
+test('one provider with more than the pool still gives thirty', async t => {
+  const many = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 35 }, (_, i) => sub(`m${i + 1}`, 'eng')) })
+  t.after(() => many.close())
+  configure({ subtitleProviderUrls: [many.url] })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id),
+    Array.from({ length: 30 }, (_, i) => `1-m${i + 1}`))
+})
+
+test('two equal providers fill the pool alternating, fifteen from each', async t => {
+  const a = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 20 }, (_, i) => sub(`a${i + 1}`, 'eng')) })
+  const b = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 20 }, (_, i) => sub(`b${i + 1}`, 'eng')) })
+  t.after(() => Promise.all([a.close(), b.close()]))
+  configure({ subtitleProviderUrls: [a.url, b.url] })
+
+  const expected: string[] = []
+  for (let i = 1; i <= 15; i++) { expected.push(`1-a${i}`); expected.push(`2-b${i}`) }
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), expected)
+})
+
+test('an uneven pair alternates until the smaller runs out, then the larger fills the rest', async t => {
+  const small = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 5 }, (_, i) => sub(`s${i + 1}`, 'eng')) })
+  const large = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 40 }, (_, i) => sub(`l${i + 1}`, 'eng')) })
+  t.after(() => Promise.all([small.close(), large.close()]))
+  configure({ subtitleProviderUrls: [small.url, large.url] })
+
+  const expected: string[] = []
+  for (let i = 1; i <= 5; i++) { expected.push(`1-s${i}`); expected.push(`2-l${i}`) }
+  for (let i = 6; i <= 25; i++) expected.push(`2-l${i}`)
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), expected)
+})
+
+const openSubtitlesV3Entry = { id: '5467612', lang: 'eng', url: 'https://subs5.strem.io/en/download/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/5467612' }
+const openSubtitlesV3PlusEntry = { id: 'v3+|5467612|x', sub_id: 5467612, lang: 'eng', url: 'https://subs.example/sub.vtt/?sub_id=5467612' }
+
+test('the same OpenSubtitles file offered by v3 and v3+ is kept once, in provider order', async t => {
+  const v3 = await startFakeSubtitleProvider({ subtitles: [openSubtitlesV3Entry] })
+  const v3Plus = await startFakeSubtitleProvider({ subtitles: [openSubtitlesV3PlusEntry] })
+  t.after(() => Promise.all([v3.close(), v3Plus.close()]))
+
+  configure({ subtitleProviderUrls: [v3.url, v3Plus.url] })
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-5467612'])
+
+  configure({ subtitleProviderUrls: [v3Plus.url, v3.url] })
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-v3+|5467612|x'])
+})
+
+test('a plain id that matches an OpenSubtitles v3 id is not a duplicate unless the URL is strem.io\'s', async t => {
+  const v3 = await startFakeSubtitleProvider({ subtitles: [openSubtitlesV3Entry] })
+  const other = await startFakeSubtitleProvider({ subtitles: [{ id: '5467612', lang: 'eng', url: 'https://other.example/file/5467612' }] })
+  t.after(() => Promise.all([v3.close(), other.close()]))
+  configure({ subtitleProviderUrls: [v3.url, other.url] })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-5467612', '2-5467612'])
 })
 
 test('each track carries the release it was made for', async t => {
