@@ -15,6 +15,23 @@ export function collectStreamProviderUrls(...values: Array<string | undefined>):
   return [...new Set(values.flatMap(value => parseStreamProviderUrls(value ?? '')))]
 }
 
+// URL prefixes whose streams fetcherr relays instead of redirecting to (see
+// src/stream-relay.ts). Env only. Each must be an http(s) URL with a path,
+// because a bare origin would relay everything that host serves.
+export function parseRelayPrefixes(value: string | undefined): string[] {
+  const out: string[] = []
+  for (const part of (value ?? '').split(',')) {
+    const prefix = part.trim()
+    if (!prefix) continue
+    let parsed: URL
+    try { parsed = new URL(prefix) } catch { continue }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue
+    if (parsed.pathname === '/') continue
+    if (!out.includes(prefix)) out.push(prefix)
+  }
+  return out
+}
+
 export function parseMusicAddonUrls(value: string): string[] {
   return value
     .split(/[\r\n,]+/)
@@ -382,4 +399,5 @@ export const config = {
   nntpPass:          process.env.NNTP_PASS ?? '',
   nntpConnections:   parsePositiveIntegerSetting(process.env.NNTP_CONNECTIONS, 4),
   nntpSsl:           parseBooleanSetting(process.env.NNTP_SSL, true),
+  streamRelayPrefixes: parseRelayPrefixes(process.env.STREAM_RELAY_PREFIXES),
 }
