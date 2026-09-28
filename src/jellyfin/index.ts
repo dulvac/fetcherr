@@ -4258,9 +4258,12 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     })
     if (!track) return reply.code(404).send({ error: 'Not found' })
     const file = opts.fetchSubtitleFile ? await opts.fetchSubtitleFile(track.url) : null
-    // One line per file, naming the client, because which player asks for what
-    // is the one thing the request log cannot tell apart.
-    app.log.info(`playback: subtitle ${streamIndex} of ${id} for ${playbackClientFromHeaders(req.headers as Record<string, string | string[] | undefined>) || 'unknown client'} -> ${file ? `${file.body.length} bytes` : 'unavailable'}`)
+    // One line per file, naming the client and the version, because which player
+    // asks for what is the one thing the request log cannot tell apart, and each
+    // version orders its tracks for its own file. Eight characters of a candidate
+    // token tell versions apart without putting the whole token in the log.
+    const version = mediaSourceId.match(/:candidate:([0-9a-f]{32})$/i)?.[1].slice(0, 8) ?? mediaSourceId
+    app.log.info(`playback: subtitle ${streamIndex} of ${id} version ${version} for ${playbackClientFromHeaders(req.headers as Record<string, string | string[] | undefined>) || 'unknown client'} -> ${file ? `${file.body.length} bytes` : 'unavailable'}`)
     if (!file) return reply.code(404).send({ error: 'Not found' })
     return reply
       .header('Content-Type', subtitleContentType(track.format, file.contentType))
