@@ -244,6 +244,49 @@ test('a client fetching a subtitle at its DeliveryUrl gets the file from this se
   await app.close()
 })
 
+test('a provider file in the OpenSubtitles v3+ shape is served without its banner', async t => {
+  // The episode item, not the movie item every other test in this file shares:
+  // the route remembers each source's subtitle order under its item id, and a
+  // single-track answer here must not leave that memory behind for them to trip on.
+  const banner = [
+    'WEBVTT',
+    '',
+    'header',
+    '00:00:01.000 --> 00:00:06.000',
+    '&gt;&gt;OpenSubtitles v3+ v0.0.4&lt;&lt;',
+    '<u>=&gt;Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV.srt</u>',
+    '',
+    'WEBVTT',
+    '',
+    '1',
+    '00:00:45.602 --> 00:00:46.972',
+    'The stove.',
+    '',
+  ].join('\n')
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/vtt; charset=utf-8' })
+    res.end(banner)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
+
+  const tracks: SubtitleTrack[] = [
+    { id: '1-a', url: `http://127.0.0.1:${port}/banner.vtt`, lang: 'eng', label: 'English', format: 'vtt', release: '' },
+  ]
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: async () => tracks, fetchSubtitleFile } as never)
+  t.after(() => app.close())
+
+  const info = await app.inject({ method: 'GET', url: `/Items/${EPISODE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+  const source = (info.json().MediaSources as Array<Record<string, unknown>>)[0]
+  const stream = (source.MediaStreams as Array<Record<string, unknown>>).find(entry => entry.Type === 'Subtitle')!
+  const res = await app.inject({ method: 'GET', url: String(stream.DeliveryUrl) })
+  assert.equal(res.statusCode, 200)
+  assert.equal(/OpenSubtitles/i.test(res.body), false)
+  assert.equal(res.body.match(/^WEBVTT$/gm)?.length, 1)
+})
+
 test('a subtitle fetch works without a prior PlaybackInfo, as after a restart', async t => {
   const host = await startFileHost()
   t.after(() => host.close())

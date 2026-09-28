@@ -1,6 +1,7 @@
 import { config, SUBTITLE_POOL_PER_LANGUAGE } from './config.js'
 import { fetchManifest, providerBases, providerLabel, type StremioManifest, type StremioMediaType } from './sootio.js'
 import { normalizeSubtitleLanguage, subtitleLanguageName } from './subtitle-lang.js'
+import { stripAdCues } from './subtitle-clean.js'
 
 // A provider-agnostic client for the Stremio subtitles resource. Every configured
 // provider is asked at once and the answers are merged, so no single provider can
@@ -263,9 +264,11 @@ export async function fetchSubtitleFile(url: string): Promise<SubtitleFile | nul
     const res = await fetch(url, { signal: AbortSignal.timeout(config.subtitleTimeoutMs) })
     if (!res.ok) return null
     if (Number(res.headers.get('content-length') ?? 0) > FILE_MAX_BYTES) return null
-    const body = Buffer.from(await res.arrayBuffer())
-    if (body.length > FILE_MAX_BYTES) return null
-    const file: SubtitleFile = { body, contentType: res.headers.get('content-type') }
+    const raw = Buffer.from(await res.arrayBuffer())
+    if (raw.length > FILE_MAX_BYTES) return null
+    // Cleaned before it enters the cache, so every client and every cache hit
+    // gets the same ad-free bytes.
+    const file: SubtitleFile = { body: stripAdCues(raw), contentType: res.headers.get('content-type') }
     for (const [key, entry] of fileCache) {
       if (entry.expiresAt <= now) fileCache.delete(key)
     }
