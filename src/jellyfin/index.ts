@@ -281,10 +281,37 @@ function stremioSearchMetaToId(meta: StremioMeta, mediaType: StremioMediaType): 
   return stremioSearchMetaIds(meta, mediaType).itemId
 }
 
+// Search answers carry no episodes, and each keystroke of a search is a new
+// search, so without this every one fetched the same series again. Ten minutes,
+// so new episodes still show up.
+const SERIES_EPISODES_TTL_MS = 10 * 60 * 1000
+const SERIES_EPISODES_MAX = 500
+const seriesEpisodesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
+
+// By IMDb id: a series with its episodes, or null.
+function fetchSeriesWithEpisodes(id: string): Promise<StremioMeta | null> {
+  const now = Date.now()
+  const cached = seriesEpisodesCache.get(id)
+  if (cached && cached.expiresAt > now) return cached.promise
+  // Deleted first, so the fresh entry goes to the back of the eviction order.
+  seriesEpisodesCache.delete(id)
+  const promise = fetchStremioMeta('series', id)
+    .catch(() => null)
+    .then(meta => meta && (meta.videos?.length ?? 0) > 0 ? meta : null)
+  const entry = { promise, expiresAt: now + SERIES_EPISODES_TTL_MS }
+  seriesEpisodesCache.set(id, entry)
+  trimCacheMap(seriesEpisodesCache, SERIES_EPISODES_MAX)
+  // Only a series with episodes is kept. Anything else is asked again next time.
+  void promise.then(meta => {
+    if (!meta && seriesEpisodesCache.get(id) === entry) seriesEpisodesCache.delete(id)
+  })
+  return promise
+}
+
 async function hydrateStremioSeriesMeta(series: StremioMeta): Promise<StremioMeta> {
   if ((series.videos?.length ?? 0) > 0) return series
-  const detailed = await fetchStremioMeta('series', series.id).catch(() => null)
-  if (!detailed || !(detailed.videos?.length ?? 0)) return series
+  const detailed = await fetchSeriesWithEpisodes(series.id)
+  if (!detailed) return series
 
   const merged: StremioMeta = {
     ...series,
