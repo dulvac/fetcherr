@@ -37,6 +37,8 @@ const tmdb = await startFakeTmdb({
     { id: 5001, title: 'Heat Wave', imdb: 'tt5001', release_date: '2020-01-01' },
     { id: 194, title: 'Amélie', original_title: "Le Fabuleux Destin d'Amélie Poulain", imdb: 'tt0211915', release_date: '2001-04-25' },
     { id: 5501, title: 'Amélie: The Making Of', original_title: "Le Fabuleux Destin d'Amélie Poulain : le tournage", imdb: 'tt5501', release_date: '2002-01-01' },
+    // TMDB has this title with no release date at all.
+    { id: 5701, title: 'Yearless', imdb: 'tt5701', release_date: '' },
   ],
   series: [
     { id: 62476, name: 'The Bureau', original_name: 'Le Bureau des Légendes', imdb: 'tt4063800', first_air_date: '2015-04-27' },
@@ -198,6 +200,14 @@ test('a movies-only request makes no TV calls', async () => {
   configure()
   assert.deepEqual(names(await search('heat', 'Movie')), ['Heat', 'Heat Wave'])
   assert.deepEqual(tmdb.requests.map(r => r.scope), ['movie', 'movie-ids'])
+})
+
+test('a TMDB movie with no release date has no year, not year zero', async () => {
+  configure()
+  const items = await search('Yearless', 'Movie')
+  assert.deepEqual(names(items), ['Yearless'])
+  assert.equal(items[0].ProductionYear, undefined)
+  assert.ok(!('ProductionYear' in items[0]), 'ProductionYear should be left out, not set to 0')
 })
 
 test('library titles come first and are not repeated', async () => {
