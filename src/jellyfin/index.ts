@@ -37,6 +37,7 @@ import {
   stremioOfficialRating,
 } from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
+import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, type TmdbHits } from '../tmdb-search.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -2046,6 +2047,22 @@ function searchDisabledResponse(
   }
 }
 
+// TMDB answers search only with a key. Until its results get rating checks, an
+// account with a rating limit keeps the Cinemeta path, where the gate applies.
+function tmdbSearchActive(user: AppUser): boolean {
+  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey && !hasRatingLimit(user)
+}
+
+// Movies become the search-movie items Similar already uses. Series become the
+// same Stremio series items a Cinemeta result does, so both open and play as today.
+async function tmdbSearchItems(hits: TmdbHits): Promise<Record<string, unknown>[]> {
+  const movies = (hits.movies ?? []).map(hit =>
+    searchMovieAutoplayItem(movieToSearchItem(tmdbMovieToMovie(hit)) as Record<string, unknown>))
+  const series = await Promise.all((hits.series ?? []).map(async hit =>
+    stremioSearchMetaToItem(await hydrateStremioSeriesMeta(tmdbSeriesToMeta(hit)), 'series') as Record<string, unknown>))
+  return [...movies, ...series]
+}
+
 async function buildSearchResultItems(
   searchTerm: string,
   includeTypes: string,
@@ -2071,18 +2088,32 @@ async function buildSearchResultItems(
     ? filterShowsForUser(user, listShows({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id, ...apiLibraryFilter() }))
     : []
   const externalSearchEnabled = externalSearchEnabledForUser(user)
-
-  const rawStremioMetas = externalSearchEnabled && stremioTypes.length
-    ? await (config.stremioSearchSource === 'trakt'
-        ? searchTraktMetas(searchTerm, stremioTypes).catch(() => [])
-        : searchStremioMetas(searchTerm, stremioTypes).catch(() => []))
-    : []
-  const stremioMetas = rawStremioMetas.filter(meta => !isStremioErrorMeta(meta))
-
   const localMovieIds = new Set(localMovies.map(movie => movie.tmdbId))
   const localShowIds = new Set(localShows.map(show => show.tmdbId))
   const localMovieImdbIds = new Set(localMovies.map(movie => movie.imdbId).filter(Boolean))
   const localShowImdbIds = new Set(localShows.map(show => show.imdbId).filter(Boolean))
+
+  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive(user)
+    ? await findTmdbTitles(searchTerm, stremioTypes, {
+        movieTmdbIds: localMovieIds,
+        movieImdbIds: localMovieImdbIds,
+        seriesTmdbIds: localShowIds,
+        seriesImdbIds: localShowImdbIds,
+      })
+    : null
+  const tmdbItems = tmdbHits ? await tmdbSearchItems(tmdbHits) : []
+  // With TMDB as the source, the Stremio search only fills in the types TMDB
+  // could not answer. Otherwise it answers every type, as it always has.
+  const stremioSearchTypes = tmdbHits
+    ? stremioTypes.filter(type => (type === 'movie' ? tmdbHits.movies : tmdbHits.series) === null)
+    : stremioTypes
+
+  const rawStremioMetas = externalSearchEnabled && stremioSearchTypes.length
+    ? await (config.stremioSearchSource === 'trakt'
+        ? searchTraktMetas(searchTerm, stremioSearchTypes).catch(() => [])
+        : searchStremioMetas(searchTerm, stremioSearchTypes).catch(() => []))
+    : []
+  const stremioMetas = rawStremioMetas.filter(meta => !isStremioErrorMeta(meta))
   const stremioSearchMetas: StremioMeta[] = []
   for (const meta of stremioMetas) {
     const mediaType = String(meta.type ?? '').toLowerCase() as StremioMediaType
@@ -2110,6 +2141,7 @@ async function buildSearchResultItems(
   const combined = withoutExcludedLocationTypes([
     ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
     ...localShows.map(show => showToSeriesItem(show, user.id)),
+    ...tmdbItems,
     ...stremioSearchItems,
   ], excludedLocationTypes)
 
