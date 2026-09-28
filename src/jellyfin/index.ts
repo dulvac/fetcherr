@@ -2134,7 +2134,23 @@ async function buildSearchResultItems(
         seriesImdbIds: localShowImdbIds,
       })
     : null
-  const tmdbItems = tmdbHits ? await tmdbSearchItems(tmdbHits, searchTerm, user) : []
+  // The library search matches English titles only, so TMDB can find a library
+  // title by another name, such as its original one. It is still the library's
+  // own item, so watch state and resume stay in one place.
+  const tmdbLibraryMovies = tmdbHits?.movies?.length
+    ? listMovies({ tmdbIds: tmdbHits.movies.map(hit => hit.tmdbId), limit: 10_000, userId: user.id, ...apiLibraryFilter() })
+    : []
+  const tmdbLibraryShows = tmdbHits?.series?.length
+    ? listShows({ tmdbIds: tmdbHits.series.map(hit => hit.tmdbId), limit: 10_000, userId: user.id, ...apiLibraryFilter() })
+    : []
+  const tmdbLibraryMovieIds = new Set(tmdbLibraryMovies.map(movie => movie.tmdbId))
+  const tmdbLibraryShowIds = new Set(tmdbLibraryShows.map(show => show.tmdbId))
+  const tmdbItems = tmdbHits
+    ? await tmdbSearchItems({
+        movies: tmdbHits.movies && tmdbHits.movies.filter(hit => !tmdbLibraryMovieIds.has(hit.tmdbId)),
+        series: tmdbHits.series && tmdbHits.series.filter(hit => !tmdbLibraryShowIds.has(hit.tmdbId)),
+      }, searchTerm, user)
+    : []
   // With TMDB as the source, the Stremio search only fills in the types TMDB
   // could not answer. Otherwise it answers every type, as it always has.
   const stremioSearchTypes = tmdbHits
@@ -2172,8 +2188,9 @@ async function buildSearchResultItems(
   }))
 
   const combined = withoutExcludedLocationTypes([
-    ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
-    ...localShows.map(show => showToSeriesItem(show, user.id)),
+    ...[...localMovies, ...filterMoviesForUser(user, tmdbLibraryMovies)]
+      .map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
+    ...[...localShows, ...filterShowsForUser(user, tmdbLibraryShows)].map(show => showToSeriesItem(show, user.id)),
     ...tmdbItems,
     ...stremioSearchItems,
   ], excludedLocationTypes)

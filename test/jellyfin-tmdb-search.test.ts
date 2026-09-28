@@ -35,6 +35,7 @@ const tmdb = await startFakeTmdb({
     { id: 5201, title: 'Monk in Pieces', imdb: 'tt5201', release_date: '2025-01-01' },
     { id: 949, title: 'Heat', imdb: 'tt0113277', release_date: '1995-12-15' },
     { id: 5001, title: 'Heat Wave', imdb: 'tt5001', release_date: '2020-01-01' },
+    { id: 194, title: 'Amélie', original_title: "Le Fabuleux Destin d'Amélie Poulain", imdb: 'tt0211915', release_date: '2001-04-25' },
   ],
   series: [
     { id: 62476, name: 'The Bureau', original_name: 'Le Bureau des Légendes', imdb: 'tt4063800', first_air_date: '2015-04-27' },
@@ -42,6 +43,7 @@ const tmdb = await startFakeTmdb({
     { id: 1695, name: 'Monk', imdb: 'tt0312172', first_air_date: '2002-07-12' },
     { id: 5301, name: 'Monkey Island', imdb: 'tt5301' },
     { id: 69740, name: 'Ozark', imdb: 'tt5071412', first_air_date: '2017-07-21' },
+    { id: 5401, name: 'Spiral', original_name: 'Engrenages', imdb: 'tt5401', first_air_date: '2005-12-13' },
   ],
 })
 const cinemeta = installFakeCinemeta({
@@ -68,13 +70,19 @@ test.after(async () => {
 const admin = db.createUser('admin', 'pw', 'admin', 'unrestricted')
 const noSearch = db.createUser('nosearch', 'pw', 'user', 'unrestricted', false)
 
-// In the library: Heat, and Ozark with an aired episode.
+// In the library: Heat and Amélie, and Ozark and Spiral with an aired episode.
 db.upsertMovie({
   tmdbId: 949, imdbId: 'tt0113277', mediaLanguage: 'en', title: 'Heat', year: 1995, overview: '', posterPath: '', backdropPath: '',
   logoPath: '', genres: '[]', runtimeMins: 170, popularity: 0, officialRating: 'R', communityRating: 0, studiosJson: '[]',
   tagsJson: '[]', castJson: '[]', releaseDate: '1995-12-15', digitalReleaseDate: '1996-06-01', syncedAt: new Date().toISOString(),
 })
 db.addSourceItem('manual:test', 'movie', 949)
+db.upsertMovie({
+  tmdbId: 194, imdbId: 'tt0211915', mediaLanguage: 'fr', title: 'Amélie', year: 2001, overview: '', posterPath: '', backdropPath: '',
+  logoPath: '', genres: '[]', runtimeMins: 122, popularity: 0, officialRating: 'R', communityRating: 0, studiosJson: '[]',
+  tagsJson: '[]', castJson: '[]', releaseDate: '2001-04-25', digitalReleaseDate: '2002-07-16', syncedAt: new Date().toISOString(),
+})
+db.addSourceItem('manual:test', 'movie', 194)
 db.upsertShow({
   tmdbId: 69740, imdbId: 'tt5071412', tvdbId: 0, mediaLanguage: 'en', title: 'Ozark', year: 2017, overview: '', posterPath: '',
   backdropPath: '', logoPath: '', genres: '[]', status: 'Ended', numSeasons: 4, popularity: 0, officialRating: 'TV-MA',
@@ -84,6 +92,16 @@ db.addSourceItem('manual:test', 'show', 69740)
 db.upsertEpisode({
   showTmdbId: 69740, seasonNumber: 1, episodeNumber: 1, name: 'Sugarwood', overview: '', stillPath: '', runtimeMins: 60,
   communityRating: 0, airDate: '2017-07-21', syncedAt: new Date().toISOString(),
+})
+db.upsertShow({
+  tmdbId: 5401, imdbId: 'tt5401', tvdbId: 0, mediaLanguage: 'fr', title: 'Spiral', year: 2005, overview: '', posterPath: '',
+  backdropPath: '', logoPath: '', genres: '[]', status: 'Ended', numSeasons: 8, popularity: 0, officialRating: 'TV-MA',
+  communityRating: 0, studiosJson: '[]', tagsJson: '[]', castJson: '[]', syncedAt: new Date().toISOString(),
+})
+db.addSourceItem('manual:test', 'show', 5401)
+db.upsertEpisode({
+  showTmdbId: 5401, seasonNumber: 1, episodeNumber: 1, name: 'Episode 1', overview: '', stillPath: '', runtimeMins: 52,
+  communityRating: 0, airDate: '2005-12-13', syncedAt: new Date().toISOString(),
 })
 
 // resolveJellyfinUser creates the jellyfin_tokens table on its first read.
@@ -178,6 +196,16 @@ test('library titles come first and are not repeated', async () => {
   assert.equal(tmdb.count('tv-ids'), 0)
   assert.deepEqual(names(await search('heat')), ['Heat', 'Heat Wave'])
   assert.ok(!tmdb.requests.some(r => r.path === '/movie/949/external_ids'), 'a lookup was spent on a library title')
+})
+
+test('a library title found by its original name comes back as the library item', async () => {
+  configure()
+  // The library search matches the English title only, so only TMDB finds these.
+  // A movie's search id is the same either way; the record behind it is not.
+  const movies = await search("Le Fabuleux Destin d'Amélie Poulain")
+  assert.deepEqual(movies.map(movie => [movie.Name, movie.OfficialRating]), [['Amélie', 'R']])
+  const shows = await search('Engrenages')
+  assert.deepEqual(shows.map(show => [show.Name, show.Id]), [['Spiral', `00000000-0000-4000-8001-${(5401).toString(16).padStart(12, '0')}`]])
 })
 
 test('TMDB failing entirely gives Cinemeta the whole answer, as today', async t => {
