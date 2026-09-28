@@ -41,6 +41,9 @@ export interface TmdbMovieHit {
   tmdbId: number
   imdbId: string
   title: string
+  // Jellyfin's OriginalTitle: the title in its own language, which a French or
+  // Romanian term often matches better.
+  originalTitle: string
   originalLanguage: string
   releaseDate: string
   year: number
@@ -55,6 +58,7 @@ export interface TmdbSeriesHit {
   tmdbId: number
   imdbId: string
   name: string
+  originalTitle: string
   firstAirDate: string
   year: number
   overview: string
@@ -217,8 +221,8 @@ function parsePage<T>(raw: unknown, parse: (entry: unknown) => T | null, path: s
   return { results: raw.results.map(entry => parse(entry)).filter((entry): entry is T => entry !== null), totalPages }
 }
 
-function rankByName<T>(items: T[], name: (item: T) => string, term: string): T[] {
-  return rankSearchResults(items.map(item => ({ Name: name(item), item })), term).map(entry => entry.item)
+function rankByName<T extends { originalTitle: string }>(items: T[], name: (item: T) => string, term: string): T[] {
+  return rankSearchResults(items.map(item => ({ Name: name(item), OriginalTitle: item.originalTitle, item })), term).map(entry => entry.item)
 }
 
 // Keyed `${kind}:${tmdbId}`: an IMDb id, '' for none, null for a failed lookup.
@@ -231,8 +235,8 @@ async function resolveImdbIds(
 ): Promise<Map<string, string | null>> {
   // Best title matches go first, so a window that closes early costs the loosest ones.
   const queue = rankSearchResults([
-    ...movies.map(movie => ({ Name: movie.title, kind: 'movie' as Kind, tmdbId: movie.tmdbId })),
-    ...series.map(show => ({ Name: show.name, kind: 'tv' as Kind, tmdbId: show.tmdbId })),
+    ...movies.map(movie => ({ Name: movie.title, OriginalTitle: movie.originalTitle, kind: 'movie' as Kind, tmdbId: movie.tmdbId })),
+    ...series.map(show => ({ Name: show.name, OriginalTitle: show.originalTitle, kind: 'tv' as Kind, tmdbId: show.tmdbId })),
   ], term)
   const found = new Map<string, string | null>()
   if (!queue.length) return found
@@ -412,6 +416,7 @@ function parseMovie(entry: unknown): MovieCandidate | null {
   return {
     tmdbId,
     title,
+    originalTitle: text(entry.original_title),
     originalLanguage: text(entry.original_language).toLowerCase(),
     releaseDate,
     year: releaseDate ? Number(releaseDate.slice(0, 4)) : 0,
@@ -432,6 +437,7 @@ function parseSeries(entry: unknown): SeriesCandidate | null {
   return {
     tmdbId,
     name,
+    originalTitle: text(entry.original_name),
     firstAirDate,
     year: firstAirDate ? Number(firstAirDate.slice(0, 4)) : 0,
     overview: text(entry.overview),
