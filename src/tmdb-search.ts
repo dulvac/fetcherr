@@ -64,6 +64,7 @@ export interface TmdbSeriesHit {
   overview: string
   posterPath: string
   backdropPath: string
+  popularity: number
 }
 
 // What the library already holds, so TMDB does not repeat it and no lookup is spent on it.
@@ -443,6 +444,7 @@ function parseSeries(entry: unknown): SeriesCandidate | null {
     overview: text(entry.overview),
     posterPath: imagePath(entry.poster_path),
     backdropPath: imagePath(entry.backdrop_path),
+    popularity: finiteNumber(entry.popularity),
   }
 }
 

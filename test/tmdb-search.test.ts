@@ -53,7 +53,7 @@ test('a movie result becomes a search-movie record with its IMDb id', () => {
 test('a series result becomes a Stremio series meta keyed by its IMDb id', () => {
   assert.deepEqual(tmdbSeriesToMeta({
     tmdbId: 62476, imdbId: 'tt4063800', name: 'The Bureau', originalTitle: 'Le Bureau des Légendes', firstAirDate: '2015-04-27', year: 2015,
-    overview: 'Spies.', posterPath: '/bureau.jpg', backdropPath: '',
+    overview: 'Spies.', posterPath: '/bureau.jpg', backdropPath: '', popularity: 12.3,
   }), { id: 'tt4063800', type: 'series', name: 'The Bureau', poster: '/bureau.jpg', description: 'Spies.', releaseInfo: '2015' })
 })
 

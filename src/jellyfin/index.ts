@@ -2085,15 +2085,19 @@ function tmdbSearchActive(searchTerm: string): boolean {
 // title matches, the ones the apps would show, are checked.
 const TMDB_RATING_CHECKS = 40
 
-type TmdbCandidate = { Name: string; OriginalTitle: string; movie: TmdbMovieHit } | { Name: string; OriginalTitle: string; series: TmdbSeriesHit }
+type TmdbCandidate = { Name: string; OriginalTitle: string; popularity: number; movie: TmdbMovieHit } | { Name: string; OriginalTitle: string; popularity: number; series: TmdbSeriesHit }
 
 // Movies become the search-movie items Similar already uses. Series become the
 // same Stremio series items a Cinemeta result does, so both open and play as today.
 async function tmdbSearchItems(hits: TmdbHits, searchTerm: string, user: AppUser): Promise<Record<string, unknown>[]> {
+  // TMDB's popularity is what a person usually means among equal title matches:
+  // the 2002 series "Monk" before six films of the same name. rankSearchResults
+  // is stable, so title-match rank still comes first and popularity only breaks
+  // ties within a rank.
   const candidates: TmdbCandidate[] = [
-    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, OriginalTitle: movie.originalTitle, movie })),
-    ...(hits.series ?? []).map(series => ({ Name: series.name, OriginalTitle: series.originalTitle, series })),
-  ]
+    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, OriginalTitle: movie.originalTitle, popularity: movie.popularity, movie })),
+    ...(hits.series ?? []).map(series => ({ Name: series.name, OriginalTitle: series.originalTitle, popularity: series.popularity, series })),
+  ].sort((a, b) => b.popularity - a.popularity)
   const limited = hasRatingLimit(user)
   // Unrestricted accounts, which is every account today, make no extra calls.
   const shown = limited ? rankSearchResults(candidates, searchTerm).slice(0, TMDB_RATING_CHECKS) : candidates

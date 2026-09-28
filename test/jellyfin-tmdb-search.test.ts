@@ -29,7 +29,7 @@ const tmdb = await startFakeTmdb({
     { id: 1365884, title: 'Call My Agent! The Movie', original_title: 'Dix Pour Cent ! Le Film', imdb: 'tt30000001', release_date: '2025-01-01' },
     { id: 32601, title: 'The Moromete Family', original_title: 'Moromeții', imdb: 'tt0093549', release_date: '1987-01-05' },
     { id: 527465, title: 'Moromete Family: On the Edge of Time', original_title: 'Moromeţii 2', imdb: 'tt7000002', release_date: '2018-03-02' },
-    { id: 449217, title: 'Monk', imdb: 'tt7000003', release_date: '2017-01-01' },
+    { id: 449217, title: 'Monk', imdb: 'tt7000003', release_date: '2017-01-01', popularity: 2 },
     { id: 1468718, title: 'Monk', imdb: null, release_date: '2021-01-01' },
     { id: 124391, title: 'The Monk', imdb: 'tt0068972', release_date: '1972-01-01' },
     { id: 5201, title: 'Monk in Pieces', imdb: 'tt5201', release_date: '2025-01-01' },
@@ -41,7 +41,7 @@ const tmdb = await startFakeTmdb({
   series: [
     { id: 62476, name: 'The Bureau', original_name: 'Le Bureau des Légendes', imdb: 'tt4063800', first_air_date: '2015-04-27' },
     { id: 64165, name: 'Call My Agent!', original_name: 'Dix pour cent', imdb: 'tt4209256', first_air_date: '2015-10-14' },
-    { id: 1695, name: 'Monk', imdb: 'tt0312172', first_air_date: '2002-07-12' },
+    { id: 1695, name: 'Monk', imdb: 'tt0312172', first_air_date: '2002-07-12', popularity: 60 },
     { id: 5301, name: 'Monkey Island', imdb: 'tt5301' },
     { id: 69740, name: 'Ozark', imdb: 'tt5071412', first_air_date: '2017-07-21' },
     { id: 5401, name: 'Spiral', original_name: 'Engrenages', imdb: 'tt5401', first_air_date: '2005-12-13' },
@@ -185,7 +185,10 @@ test('monk puts exact matches first and leaves out what cannot play', async () =
   configure()
   const items = await search('monk')
   assert.deepEqual(items.map(item => [item.Name, item.Type]), [
-    ['Monk', 'Movie'], ['The Monk', 'Movie'], ['Monk', 'Series'], ['Monk in Pieces', 'Movie'], ['Monkey Island', 'Series'],
+    // The series is far more popular on TMDB than the 2017 movie of the same
+    // name, and both are exact title matches, so TMDB's popularity, not the
+    // movies-then-series order the two lists arrived in, decides which comes first.
+    ['Monk', 'Series'], ['Monk', 'Movie'], ['The Monk', 'Movie'], ['Monk in Pieces', 'Movie'], ['Monkey Island', 'Series'],
   ])
   assert.ok(!items.some(item => (item.ProviderIds as Item | undefined)?.Tmdb === '1468718'), 'a title with no IMDb id was listed')
   assert.deepEqual(catalogSearches(), [])

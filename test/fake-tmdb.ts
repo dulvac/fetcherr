@@ -24,6 +24,8 @@ export interface FakeTmdbMovie {
   poster_path?: string | null
   // The US certification /movie/{id} reports. Unset: none at all.
   certification?: string
+  // Default 1, matching every fixture from before popularity ordering mattered.
+  popularity?: number
 }
 
 export interface FakeTmdbSeries {
@@ -34,6 +36,7 @@ export interface FakeTmdbSeries {
   first_air_date?: string
   overview?: string
   poster_path?: string | null
+  popularity?: number
 }
 
 export interface FakeTmdbOptions {
@@ -103,13 +106,13 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     id: m.id, title: m.title, original_title: m.original_title ?? m.title, original_language: 'en',
     release_date: m.release_date ?? '2000-01-01', overview: m.overview ?? '',
     poster_path: m.poster_path === undefined ? `/m${m.id}.jpg` : m.poster_path, backdrop_path: null,
-    popularity: 1, vote_average: 7,
+    popularity: m.popularity ?? 1, vote_average: 7,
   })
   const seriesResult = (s: FakeTmdbSeries) => ({
     id: s.id, name: s.name, original_name: s.original_name ?? s.name, original_language: 'en',
     first_air_date: s.first_air_date ?? '2000-01-01', overview: s.overview ?? '',
     poster_path: s.poster_path === undefined ? `/s${s.id}.jpg` : s.poster_path, backdrop_path: null,
-    popularity: 1, vote_average: 7,
+    popularity: s.popularity ?? 1, vote_average: 7,
   })
   const movieDetails = (m: FakeTmdbMovie) => ({
     ...movieResult(m),
