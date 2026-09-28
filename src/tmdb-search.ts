@@ -112,7 +112,7 @@ export async function findTmdbTitles(term: string, types: StremioMediaType[], sk
   // Ranked before the cap, because TMDB's popularity order puts loose matches
   // ahead of the exact title, and exact titles often have no IMDb id.
   const seriesCandidates = rankByName((series ?? []).filter(show => !skip.seriesTmdbIds.has(show.tmdbId)), show => show.name, term)
-  const imdbIds = await resolveImdbIds(term, movieCandidates, seriesCandidates, priority)
+  const imdbIds = await resolveImdbIds(term, movieCandidates, seriesCandidates, skip.seriesImdbIds, priority)
   return {
     movies: movies === null ? null : withImdbIds(movieCandidates, 'movie', imdbIds, skip.movieImdbIds).slice(0, TMDB_MOVIES_PER_SEARCH),
     series: series === null ? null : withImdbIds(seriesCandidates, 'tv', imdbIds, skip.seriesImdbIds).slice(0, TMDB_SERIES_PER_SEARCH),
@@ -212,7 +212,13 @@ function rankByName<T>(items: T[], name: (item: T) => string, term: string): T[]
 }
 
 // Keyed `${kind}:${tmdbId}`: an IMDb id, '' for none, null for a failed lookup.
-async function resolveImdbIds(term: string, movies: MovieCandidate[], series: SeriesCandidate[], priority: number): Promise<Map<string, string | null>> {
+async function resolveImdbIds(
+  term: string,
+  movies: MovieCandidate[],
+  series: SeriesCandidate[],
+  seriesSkipImdbIds: ReadonlySet<string>,
+  priority: number,
+): Promise<Map<string, string | null>> {
   // Best title matches go first, so a window that closes early costs the loosest ones.
   const queue = rankSearchResults([
     ...movies.map(movie => ({ Name: movie.title, kind: 'movie' as Kind, tmdbId: movie.tmdbId })),
@@ -224,10 +230,16 @@ async function resolveImdbIds(term: string, movies: MovieCandidate[], series: Se
   // than one per ten titles.
   const window = AbortSignal.timeout(config.tmdbSearchTimeoutMs)
   let next = 0
+  // Series are cut to 20 once looked up, and the queue is in rank order, so the
+  // ones after the twentieth to have a usable id could never be shown.
+  const seriesKept = new Set<string>()
   const worker = async () => {
     while (next < queue.length && !window.aborted) {
       const { kind, tmdbId } = queue[next++]
-      found.set(`${kind}:${tmdbId}`, await imdbIdFor(kind, tmdbId, window, priority))
+      if (kind === 'tv' && seriesKept.size >= TMDB_SERIES_PER_SEARCH) continue
+      const imdbId = await imdbIdFor(kind, tmdbId, window, priority)
+      found.set(`${kind}:${tmdbId}`, imdbId)
+      if (kind === 'tv' && imdbId && !seriesSkipImdbIds.has(imdbId)) seriesKept.add(imdbId)
     }
   }
   await Promise.all(Array.from({ length: Math.min(REQUESTS_IN_FLIGHT, queue.length) }, worker))
