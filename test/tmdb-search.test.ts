@@ -26,6 +26,16 @@ async function fakeTmdb(t: { after: (fn: () => unknown) => void }, options: Fake
 const numbered = (count: number, firstId: number, title: (n: number) => string): FakeTmdbMovie[] =>
   Array.from({ length: count }, (_, i) => ({ id: firstId + i, title: title(i + 1), imdb: `tt${firstId + i}` }))
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function until(condition: () => boolean, what: string) {
+  const started = Date.now()
+  while (!condition()) {
+    if (Date.now() - started > 2000) throw new Error(`gave up waiting for ${what}`)
+    await sleep(5)
+  }
+}
+
 test('a movie result becomes a search-movie record with its IMDb id', () => {
   const movie = tmdbMovieToMovie({
     tmdbId: 32601, imdbId: 'tt0093549', title: 'The Moromete Family', originalLanguage: 'ro', releaseDate: '1987-01-05',
@@ -278,6 +288,31 @@ test('searches in flight together share one budget of ten TMDB requests', async 
   ])
   assert.deepEqual([agent.movies?.length, spy.movies?.length], [40, 40])
   assert.equal(fake.maxInFlight(), 10)
+})
+
+test('when TMDB is busy, the newest search goes first', async t => {
+  // Typing a title starts a search per keystroke, and only the last is on screen.
+  const older = [...numbered(40, 3401, n => `Agent ${n}`), ...numbered(40, 3501, n => `Spy ${n}`), ...numbered(40, 3601, n => `Cop ${n}`)]
+  const fake = await fakeTmdb(t, { movies: [...older, ...numbered(5, 3701, n => `Monk ${n}`)] })
+  for (const movie of older) fake.holdLookups.add(movie.id)
+  const olderSearches = ['agent', 'spy', 'cop'].map(term => findTmdbTitles(term, ['movie'], NO_SKIP))
+  // All ten places are taken, and twenty more older lookups wait for one.
+  await until(() => fake.held() === 10, 'ten held lookups')
+  let answered = false
+  const newest = findTmdbTitles('monk', ['movie'], NO_SKIP).finally(() => { answered = true })
+  let released = 0
+  while (!answered && released < 40) {
+    fake.release(1)
+    released++
+    await sleep(25)
+  }
+  assert.deepEqual((await newest).movies?.map(m => m.tmdbId), [3701, 3702, 3703, 3704, 3705])
+  // One place for its search page and one for its lookups, give or take a
+  // slow machine. In arrival order it would wait behind twenty.
+  assert.ok(released <= 5, `the newest search waited for ${released} older lookups`)
+  fake.holdLookups.clear()
+  fake.release()
+  await Promise.all(olderSearches)
 })
 
 test('slow lookups give up together inside one window', async t => {
