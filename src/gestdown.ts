@@ -1,6 +1,7 @@
 import { config } from './config.js'
 import { fetchCinemetaMeta } from './sootio.js'
 import { subtitleLanguageTwoLetter } from './subtitle-lang.js'
+import { releaseTags } from './subtitle-rank.js'
 import { trimCacheMap } from './cache-utils.js'
 
 // A direct client for Gestdown (api.gestdown.info), the public Addic7ed mirror.
@@ -171,10 +172,15 @@ async function fetchLanguage(
 // group pattern only reads a trailing -GROUP, so a bare group name is given a
 // leading hyphen here, which makes it read exactly as a fuller name naming the
 // same group would. A version that already looks like a release name, such as
-// 1080p.BluRay.x264-AiRTV, is left as it is.
+// 1080p.BluRay.x264-AiRTV, is left as it is. A version that is itself a source
+// or resolution word, such as WEB or BluRay, is left alone too: releaseTags
+// already reads it as a source with no group, and hyphenating it would give it
+// a group of the same name, doubling its label.
 const BARE_GROUP = /^(?=.*[A-Za-z])[A-Za-z0-9]{2,12}$/
 
 function releaseNameOf(version: unknown): string {
   const text = typeof version === 'string' ? version.trim() : ''
-  return BARE_GROUP.test(text) ? `-${text}` : text
+  if (!BARE_GROUP.test(text)) return text
+  const { source, resolution } = releaseTags(text)
+  return source || resolution ? text : `-${text}`
 }

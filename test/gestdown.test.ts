@@ -111,6 +111,23 @@ test('English and French tracks come back, with release labels, srt format and G
   ])
 })
 
+test('a Gestdown version that is a source word gets that source\'s label, not a doubled one', async t => {
+  const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
+  t.after(() => fake.close())
+  const cinemeta = stubCinemeta(() => ({ status: 200, meta: { id: IMDB_ID, tvdb_id: TVDB_ID } }))
+  t.after(cinemeta.restore)
+  const entries = ['WEB', 'HDTV', 'AMZN', 'BluRay'].map((version, i) => ({
+    subtitleId: `source-word-${i}`, version, release: null, qualities: ['1080p'], completed: true, hearingImpaired: false,
+    downloadUri: `/subtitles/download/source-word-${i}`, language: 'English', source: 'Addic7ed',
+  }))
+  fake.setLanguage(GUID, 1, 1, 'en', { entries: [...entries, LIBERTY_ENTRY] })
+  configure({ gestdownBaseUrl: fake.url })
+
+  const tracks = await fetchSubtitles('series', `${IMDB_ID}:1:1`)
+  assert.deepEqual(tracks.map(track => releaseLabel(track.release)), ['WEB', 'HDTV', 'AMZN', 'BluRay', 'LiBERTY'])
+  assert.equal(releaseTags(tracks[4].release).group, 'LiBERTY')
+})
+
 test('a second episode of the same show reuses the cached show', async t => {
   const fake = await startFakeGestdown({ shows: [{ tvdbId: TVDB_ID, guid: GUID }] })
   t.after(() => fake.close())
