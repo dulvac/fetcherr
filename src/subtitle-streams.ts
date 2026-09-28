@@ -54,6 +54,19 @@ export function displayLabel(tracks: ReadonlyArray<Pick<SubtitleTrack, 'lang' | 
   return release ? `${base} · ${release}` : base
 }
 
+// Every character a file name cannot hold safely: the path separators of either
+// OS, and any control character a provider's release text might carry.
+const UNSAFE_PATH_CHARS = /[/\\\x00-\x1f\x7f]/g
+
+// VidHub names a subtitle track by the file name at the end of its Path rather
+// than by DisplayTitle, so the same label goes there, cleaned of what a file
+// name cannot hold. A label that sanitizes away to nothing - seen only with odd
+// provider data, never with a real release - falls back to the language name.
+function subtitlePathName(label: string, languageName: string): string {
+  const cleaned = label.replace(UNSAFE_PATH_CHARS, '-').trim()
+  return cleaned || languageName
+}
+
 export interface SubtitleStreamOptions {
   // How many tracks each version shows per language.
   perLanguage: number
@@ -82,7 +95,9 @@ export function attachSubtitleStreams(
     const sourceId = String(source.Id ?? '')
     rememberSubtitleOrder(sourceId, ordered.map(track => track.id))
     const subtitleStreams = ordered.map((track, i) => {
-      const label = displayLabel(ordered, i, subtitleLanguageName(track.lang))
+      const languageName = subtitleLanguageName(track.lang)
+      const label = displayLabel(ordered, i, languageName)
+      const pathName = subtitlePathName(label, languageName)
       return {
         Type: 'Subtitle',
         Index: first + i,
@@ -106,7 +121,7 @@ export function attachSubtitleStreams(
         IsHearingImpaired: false,
         TimeBase: '1/1000',
         Level: 0,
-        Path: `/fetcherr/subtitles/${itemId}/${first + i}.${track.lang}.${track.format}`,
+        Path: `/fetcherr/subtitles/${itemId}/${first + i}/${pathName}.${track.lang}.${track.format}`,
         LocalizedUndefined: 'Undefined',
         LocalizedDefault: 'Default',
         LocalizedForced: 'Forced',
