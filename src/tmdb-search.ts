@@ -253,13 +253,26 @@ async function resolveImdbIds(
     }
   }
   await Promise.all(Array.from({ length: Math.min(REQUESTS_IN_FLIGHT, queue.length) }, worker))
+  // A window that closed early stopped the workers, but an id already known
+  // costs nothing to fill in.
+  for (const { kind, tmdbId } of queue) {
+    const key = `${kind}:${tmdbId}`
+    if (found.get(key) != null) continue
+    const known = knownImdbId(key)
+    if (known !== undefined) found.set(key, known)
+  }
   return found
+}
+
+function knownImdbId(key: string): string | undefined {
+  const known = imdbCache.get(key)
+  return known && known.expiresAt > Date.now() ? known.imdbId : undefined
 }
 
 function imdbIdFor(kind: Kind, tmdbId: number, window: AbortSignal, priority: number): Promise<string | null> {
   const key = `${kind}:${tmdbId}`
-  const known = imdbCache.get(key)
-  if (known && known.expiresAt > Date.now()) return Promise.resolve(known.imdbId)
+  const known = knownImdbId(key)
+  if (known !== undefined) return Promise.resolve(known)
   const pending = lookupsInFlight.get(key)
   if (pending) return pending
   const lookup = tmdbSearchGet(`/${kind}/${tmdbId}/external_ids`, {}, window, priority)

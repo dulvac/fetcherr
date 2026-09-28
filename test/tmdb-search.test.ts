@@ -337,6 +337,17 @@ test('slow lookups give up together inside one window', async t => {
   assert.equal(fake.count('movie-ids'), 10)
 })
 
+test('titles whose IMDb id is known still come back when the window closes early', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const fake = await fakeTmdb(t, { movies: numbered(25, 4401, n => `Slow ${n}`) }, { tmdbSearchTimeoutMs: 300 })
+  // Finds Slow 2 and Slow 20 to 25, and learns their ids.
+  await findTmdbTitles('slow 2', ['movie'], NO_SKIP)
+  fake.setMode('movie-ids', 'slow')
+  const hits = await findTmdbTitles('slow', ['movie'], NO_SKIP)
+  // The window closed on ten slow lookups, with Slow 20 to 25 queued behind them.
+  assert.deepEqual(hits.movies?.map(m => m.tmdbId), [4402, 4420, 4421, 4422, 4423, 4424, 4425])
+})
+
 test('after a failed search TMDB rests for a minute, and Cinemeta answers', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
   t.mock.method(console, 'warn', () => {})
