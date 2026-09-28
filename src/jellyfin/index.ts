@@ -2047,9 +2047,11 @@ function searchDisabledResponse(
   }
 }
 
-// TMDB answers search only with a key.
-function tmdbSearchActive(): boolean {
-  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey
+// TMDB answers search only with a key. A single letter matches thousands of
+// titles and would spend a whole search's lookups on ones nobody meant, so
+// Cinemeta answers it, as it did before.
+function tmdbSearchActive(searchTerm: string): boolean {
+  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey && [...searchTerm.trim()].length > 1
 }
 
 // A rating-limited account costs one rating lookup per title, so only the best
@@ -2124,7 +2126,7 @@ async function buildSearchResultItems(
   const localMovieImdbIds = new Set(localMovies.map(movie => movie.imdbId).filter(Boolean))
   const localShowImdbIds = new Set(localShows.map(show => show.imdbId).filter(Boolean))
 
-  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive()
+  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive(searchTerm)
     ? await findTmdbTitles(searchTerm, stremioTypes, {
         movieTmdbIds: localMovieIds,
         movieImdbIds: localMovieImdbIds,

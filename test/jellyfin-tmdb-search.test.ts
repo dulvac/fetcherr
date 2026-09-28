@@ -211,6 +211,13 @@ test('without a TMDB key, or with another source, TMDB is not asked', async () =
   assert.deepEqual(catalogSearches(), ['/catalog/movie/top/search=monk.json', '/catalog/series/top/search=monk.json'])
 })
 
+test('a one-letter search goes to Cinemeta, as it did before TMDB', async () => {
+  configure()
+  assert.deepEqual(names(await search('h')), ['Heat', 'Heat of the Night', 'Heat Street'])
+  assert.equal(tmdb.requests.length, 0)
+  assert.deepEqual(catalogSearches(), ['/catalog/movie/top/search=h.json', '/catalog/series/top/search=h.json'])
+})
+
 test('an account without search, or a search for people only, asks nobody', async () => {
   configure()
   assert.deepEqual(names(await search('heat', 'Movie,Series', tokens.noSearch)), ['Heat'])
