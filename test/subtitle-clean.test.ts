@@ -190,3 +190,58 @@ test('a cue that mentions OpenSubtitles without v3+ is kept', () => {
     '',
   ].join('\n'))
 })
+
+test('a whitespace-only separator line still splits blocks, so an ad next to a real cue does not take it down', () => {
+  const body = Buffer.from([
+    '1',
+    '00:00:00,000 --> 00:00:02,000',
+    'Advertise your product or brand here',
+    ' ',
+    '2',
+    '00:00:05,000 --> 00:00:07,000',
+    'Hello there',
+    '',
+    '3',
+    '00:00:10,000 --> 00:00:12,000',
+    'Bye',
+    '',
+  ].join('\n'))
+  const cleaned = stripAdCues(body).toString('utf-8')
+  assert.equal(cleaned, [
+    '1',
+    '00:00:05,000 --> 00:00:07,000',
+    'Hello there',
+    '',
+    '2',
+    '00:00:10,000 --> 00:00:12,000',
+    'Bye',
+    '',
+  ].join('\n'))
+})
+
+test('an ad cue and a real cue with no separator at all are kept whole, not dropped together', () => {
+  const body = Buffer.from([
+    '1',
+    '00:00:00,000 --> 00:00:02,000',
+    'Advertise your product or brand here',
+    '2',
+    '00:00:05,000 --> 00:00:07,000',
+    'Hello there',
+    '',
+  ].join('\n'))
+  assert.strictEqual(stripAdCues(body), body)
+})
+
+test('an ASS file with an arrow in a Dialogue line is unchanged, ad phrase and all', () => {
+  const body = Buffer.from([
+    '[Script Info]',
+    'Title: Default Aegisub file',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    'Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Something --> Else',
+    'Dialogue: 0,0:00:05.00,0:00:08.00,Default,,0,0,0,,OpenSubtitles v3+ credit line',
+    '',
+  ].join('\n'))
+  assert.strictEqual(stripAdCues(body), body)
+})

@@ -27,6 +27,13 @@ export function stripAdCues(body: Buffer): Buffer {
     return body
   }
 
+  // ASS/SSA cues (Dialogue: ...) never use -->, but a Dialogue line's own free
+  // text can contain one coincidentally, which would otherwise read as SRT and
+  // risk dropping a whole [Events] block over one line's wording. The real
+  // format tag is always the file's first line once a BOM and any leading
+  // whitespace are out of the way.
+  if (text.trimStart().startsWith('[Script Info]')) return body
+
   const lineEnding = text.includes('\r\n') ? '\r\n' : '\n'
   // The output's own leading and trailing line endings are ours to set, not the
   // input's, so a run of blank lines at either edge is not a block of its own.
@@ -36,13 +43,17 @@ export function stripAdCues(body: Buffer): Buffer {
     : normalized.split('\n').some(line => line.includes('-->')) ? 'srt' : null
   if (!format) return body
 
-  const blocks = normalized.split(/\n{2,}/).filter(block => block.length > 0).map(block => block.split('\n'))
+  // A line holding only spaces or tabs separates blocks the same as an empty
+  // line does: providers do not always leave a truly blank line around an
+  // inserted ad.
+  const blocks = normalized.split(/\n(?:[ \t]*\n)+/).filter(block => block.length > 0).map(block => block.split('\n'))
   const kept: string[][] = []
   let dropped = false
 
   blocks.forEach((lines, index) => {
     const arrowIndex = lines.findIndex(line => line.includes('-->'))
     const isCue = arrowIndex !== -1
+    const arrowCount = lines.filter(line => line.includes('-->')).length
     // The header is never checked: the first block in a WebVTT file always is one.
     if (format === 'vtt' && index === 0) {
       kept.push(lines)
@@ -53,7 +64,10 @@ export function stripAdCues(body: Buffer): Buffer {
       dropped = true
       return
     }
-    if (isCue && isAdCue(lines.slice(arrowIndex + 1))) {
+    // More than one cue in a block means two cues ran together with no blank
+    // line between them. Which cue the ad phrase belongs to is then unknown,
+    // so the whole block is kept rather than risk taking a real cue down with it.
+    if (isCue && arrowCount === 1 && isAdCue(lines.slice(arrowIndex + 1))) {
       dropped = true
       return
     }
