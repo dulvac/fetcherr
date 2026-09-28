@@ -72,9 +72,9 @@ function issueToken(userId: string): string {
 const tokens = { admin: issueToken(admin.id), romanian: issueToken(romanian.id), german: issueToken(german.id), kid: issueToken(kid.id) }
 
 const TRACKS: SubtitleTrack[] = [
-  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt' },
-  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt' },
-  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt' },
+  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt', release: '' },
+  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt', release: '' },
+  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt', release: '' },
 ]
 
 // The router options src/index.ts:38-43 builds, so the tests measure what is deployed.
@@ -207,10 +207,10 @@ async function startFileHost() {
 
 async function appServingFiles(base: string) {
   const tracks: SubtitleTrack[] = [
-    { id: '1-a', url: `${base}/a.srt`, lang: 'eng', label: 'English 1', format: 'srt' },
-    { id: '1-b', url: `${base}/b.srt`, lang: 'eng', label: 'English 2', format: 'srt' },
-    { id: '1-c', url: `${base}/c.vtt`, lang: 'rum', label: 'Romanian', format: 'vtt' },
-    { id: '1-d', url: `${base}/fail.srt`, lang: 'ger', label: 'German', format: 'srt' },
+    { id: '1-a', url: `${base}/a.srt`, lang: 'eng', label: 'English 1', format: 'srt', release: '' },
+    { id: '1-b', url: `${base}/b.srt`, lang: 'eng', label: 'English 2', format: 'srt', release: '' },
+    { id: '1-c', url: `${base}/c.vtt`, lang: 'rum', label: 'Romanian', format: 'vtt', release: '' },
+    { id: '1-d', url: `${base}/fail.srt`, lang: 'ger', label: 'German', format: 'srt', release: '' },
   ]
   const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
   await app.register(jellyfinRoutes, { lookupSubtitles: async () => tracks, fetchSubtitleFile } as never)

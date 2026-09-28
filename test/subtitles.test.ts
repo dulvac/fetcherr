@@ -57,6 +57,29 @@ test('each language is capped, in provider order and then the provider\'s own or
   assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a1', '1-a2', '2-b1', '2-b2'])
 })
 
+test('each track carries the release it was made for', async t => {
+  const provider = await startFakeSubtitleProvider({
+    subtitles: [
+      { ...sub('a', 'eng'), movieReleaseName: 'Monk.S01E01.720p.WEB-DL.H264.AAC20-myTV', subtitleFileName: 'Other.Name.srt' },
+      { ...sub('b', 'eng'), movieReleaseName: '', subtitleFileName: 'Monk - 1x01 - Mr. Monk and the Candidate_WEBRip.srt' },
+      { ...sub('c', 'eng'), movieReleaseName: '   ', subtitleFileName: 'Monk.S01E01.DVDRip.ass' },
+      { ...sub('d', 'eng'), movieReleaseName: 42 },
+      sub('e', 'fre'),
+    ],
+  })
+  t.after(() => provider.close())
+  configure({ subtitleProviderUrls: [provider.url], subtitleMaxPerLanguage: 10 })
+
+  const tracks = await fetchSubtitles('movie', 'tt0111161')
+  assert.deepEqual(tracks.map(track => [track.id, track.release, track.label]), [
+    ['1-a', 'Monk.S01E01.720p.WEB-DL.H264.AAC20-myTV', 'English 1'],
+    ['1-b', 'Monk - 1x01 - Mr. Monk and the Candidate_WEBRip', 'English 2'],
+    ['1-c', 'Monk.S01E01.DVDRip', 'English 3'],
+    ['1-d', '', 'English 4'],
+    ['1-e', '', 'French'],
+  ])
+})
+
 test('the same file offered by two providers is offered once', async t => {
   const shared = { id: 'x', lang: 'eng', url: 'https://subs.example/file/shared' }
   const first = await startFakeSubtitleProvider({ subtitles: [shared] })

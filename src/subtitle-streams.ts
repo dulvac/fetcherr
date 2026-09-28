@@ -1,4 +1,6 @@
 import type { StremioMediaType } from './sootio.js'
+import { subtitleLanguageName } from './subtitle-lang.js'
+import { releaseLabel } from './subtitle-rank.js'
 import type { SubtitleTrack } from './subtitles.js'
 
 export interface SubtitleLookupKey {
@@ -40,6 +42,18 @@ export function parsePlayPath(playPath: string): SubtitleLookupKey | null {
   return null
 }
 
+// "English 2 · 720p WEB-DL myTV": numbered within its language in the order
+// given, as the generic labels are, then the release the file was made for, so
+// a viewer can pick the file cut for the version playing. Stremio shows the same.
+export function displayLabel(tracks: ReadonlyArray<Pick<SubtitleTrack, 'lang' | 'release'>>, i: number, languageName: string): string {
+  const track = tracks[i]
+  const sameLanguage = tracks.filter(other => other.lang === track.lang).length
+  const position = tracks.slice(0, i).filter(other => other.lang === track.lang).length + 1
+  const base = sameLanguage > 1 ? `${languageName} ${position}` : languageName
+  const release = releaseLabel(track.release)
+  return release ? `${base} · ${release}` : base
+}
+
 // One external subtitle stream per track, after whatever streams the source
 // already lists. The first track in the preferred language becomes the default
 // only when there is one; otherwise nothing is forced and the field is left out.
@@ -55,36 +69,39 @@ export function attachSubtitleStreams(
     const existing = Array.isArray(source.MediaStreams) ? source.MediaStreams as unknown[] : []
     const first = existing.length
     const sourceId = String(source.Id ?? '')
-    const subtitleStreams = tracks.map((track, i) => ({
-      Type: 'Subtitle',
-      Index: first + i,
-      Codec: track.format,
-      Language: track.lang,
-      DisplayTitle: track.label,
-      IsExternal: true,
-      IsTextSubtitleStream: true,
-      SupportsExternalStream: true,
-      DeliveryMethod: 'External',
-      // Server-relative, as real Jellyfin sends it: the players on this network
-      // fetch subtitles from their own server and nowhere else.
-      DeliveryUrl: `/Videos/${itemId}/${sourceId}/Subtitles/${first + i}/0/Stream.${track.format}`,
-      IsExternalUrl: false,
-      IsDefault: i === defaultAt,
-      // The rest of what real Jellyfin sends for an external .srt. Infuse needs
-      // none of it; it is here for players that only trust a stream shaped
-      // exactly like a library file's.
-      Title: track.label,
-      IsForced: false,
-      IsHearingImpaired: false,
-      TimeBase: '1/1000',
-      Level: 0,
-      Path: `/fetcherr/subtitles/${itemId}/${first + i}.${track.lang}.${track.format}`,
-      LocalizedUndefined: 'Undefined',
-      LocalizedDefault: 'Default',
-      LocalizedForced: 'Forced',
-      LocalizedExternal: 'External',
-      LocalizedHearingImpaired: 'Hearing Impaired',
-    }))
+    const subtitleStreams = tracks.map((track, i) => {
+      const label = displayLabel(tracks, i, subtitleLanguageName(track.lang))
+      return {
+        Type: 'Subtitle',
+        Index: first + i,
+        Codec: track.format,
+        Language: track.lang,
+        DisplayTitle: label,
+        IsExternal: true,
+        IsTextSubtitleStream: true,
+        SupportsExternalStream: true,
+        DeliveryMethod: 'External',
+        // Server-relative, as real Jellyfin sends it: the players on this network
+        // fetch subtitles from their own server and nowhere else.
+        DeliveryUrl: `/Videos/${itemId}/${sourceId}/Subtitles/${first + i}/0/Stream.${track.format}`,
+        IsExternalUrl: false,
+        IsDefault: i === defaultAt,
+        // The rest of what real Jellyfin sends for an external .srt. Infuse needs
+        // none of it; it is here for players that only trust a stream shaped
+        // exactly like a library file's.
+        Title: label,
+        IsForced: false,
+        IsHearingImpaired: false,
+        TimeBase: '1/1000',
+        Level: 0,
+        Path: `/fetcherr/subtitles/${itemId}/${first + i}.${track.lang}.${track.format}`,
+        LocalizedUndefined: 'Undefined',
+        LocalizedDefault: 'Default',
+        LocalizedForced: 'Forced',
+        LocalizedExternal: 'External',
+        LocalizedHearingImpaired: 'Hearing Impaired',
+      }
+    })
     const next: Record<string, unknown> = { ...source, MediaStreams: [...existing, ...subtitleStreams] }
     if (defaultAt >= 0) next.DefaultSubtitleStreamIndex = first + defaultAt
     return next
