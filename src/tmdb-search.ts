@@ -89,7 +89,10 @@ const imdbCache = new Map<string, { imdbId: string; expiresAt: number }>()
 const lookupsInFlight = new Map<string, Promise<string | null>>()
 let lastFailureLogAt: number | undefined
 let requestsInFlight = 0
-const waitingForTurn: Array<() => void> = []
+// Each search's number, higher for newer ones. A user typing a title starts a
+// search per keystroke and sees only the last, so the newest goes first.
+let searchesStarted = 0
+const waitingForTurn: Array<{ priority: number; start: () => void }> = []
 
 // Called on every settings save. A new key should be tried, and its failure
 // logged, on the next keystroke rather than ten minutes later.
@@ -100,15 +103,16 @@ export function clearTmdbSearchCache(): void {
 
 export async function findTmdbTitles(term: string, types: StremioMediaType[], skip: TmdbSkip = NOTHING_TO_SKIP): Promise<TmdbHits> {
   if (!term.trim()) return { movies: [], series: [] }
+  const priority = ++searchesStarted
   const [movies, series] = await Promise.all([
-    types.includes('movie') ? searchType('movie', term, parseMovie) : Promise.resolve([] as MovieCandidate[]),
-    types.includes('series') ? searchType('tv', term, parseSeries) : Promise.resolve([] as SeriesCandidate[]),
+    types.includes('movie') ? searchType('movie', term, parseMovie, priority) : Promise.resolve([] as MovieCandidate[]),
+    types.includes('series') ? searchType('tv', term, parseSeries, priority) : Promise.resolve([] as SeriesCandidate[]),
   ])
   const movieCandidates = (movies ?? []).filter(movie => !skip.movieTmdbIds.has(movie.tmdbId)).slice(0, TMDB_MOVIES_PER_SEARCH)
   // Ranked before the cap, because TMDB's popularity order puts loose matches
   // ahead of the exact title, and exact titles often have no IMDb id.
   const seriesCandidates = rankByName((series ?? []).filter(show => !skip.seriesTmdbIds.has(show.tmdbId)), show => show.name, term)
-  const imdbIds = await resolveImdbIds(term, movieCandidates, seriesCandidates)
+  const imdbIds = await resolveImdbIds(term, movieCandidates, seriesCandidates, priority)
   return {
     movies: movies === null ? null : withImdbIds(movieCandidates, 'movie', imdbIds, skip.movieImdbIds).slice(0, TMDB_MOVIES_PER_SEARCH),
     series: series === null ? null : withImdbIds(seriesCandidates, 'tv', imdbIds, skip.seriesImdbIds).slice(0, TMDB_SERIES_PER_SEARCH),
@@ -158,17 +162,17 @@ export function tmdbSeriesToMeta(hit: TmdbSeriesHit): StremioMeta {
   }
 }
 
-async function searchType<T>(kind: Kind, term: string, parse: (entry: unknown) => T | null): Promise<T[] | null> {
+async function searchType<T>(kind: Kind, term: string, parse: (entry: unknown) => T | null, priority: number): Promise<T[] | null> {
   let first: Page<T>
   try {
-    first = await cachedPage(kind, term, 1, parse)
+    first = await cachedPage(kind, term, 1, parse, priority)
   } catch (err) {
     logFailure(err)
     return null
   }
   if (first.totalPages < 2) return first.results
   try {
-    const second = await cachedPage(kind, term, 2, parse)
+    const second = await cachedPage(kind, term, 2, parse, priority)
     return [...first.results, ...second.results]
   } catch (err) {
     // Page 1 is an answer, so Cinemeta is not asked for this type.
@@ -177,7 +181,7 @@ async function searchType<T>(kind: Kind, term: string, parse: (entry: unknown) =
   }
 }
 
-function cachedPage<T>(kind: Kind, term: string, page: number, parse: (entry: unknown) => T | null): Promise<Page<T>> {
+function cachedPage<T>(kind: Kind, term: string, page: number, parse: (entry: unknown) => T | null, priority: number): Promise<Page<T>> {
   const key = `${kind}|${page}|${term}`
   const now = Date.now()
   const cached = pageCache.get(key)
@@ -186,7 +190,7 @@ function cachedPage<T>(kind: Kind, term: string, page: number, parse: (entry: un
   pageCache.delete(key)
   const path = `/search/${kind}`
   const promise = tmdbSearchGet(path, { query: term, language: 'en-US', include_adult: 'false', page: String(page) },
-    AbortSignal.timeout(config.tmdbSearchTimeoutMs)).then(raw => parsePage(raw, parse, path))
+    AbortSignal.timeout(config.tmdbSearchTimeoutMs), priority).then(raw => parsePage(raw, parse, path))
   const entry = { promise: promise as Promise<Page<unknown>>, expiresAt: now + PAGE_TTL_MS }
   pageCache.set(key, entry)
   trimCacheMap(pageCache, PAGE_CACHE_MAX)
@@ -208,7 +212,7 @@ function rankByName<T>(items: T[], name: (item: T) => string, term: string): T[]
 }
 
 // Keyed `${kind}:${tmdbId}`: an IMDb id, '' for none, null for a failed lookup.
-async function resolveImdbIds(term: string, movies: MovieCandidate[], series: SeriesCandidate[]): Promise<Map<string, string | null>> {
+async function resolveImdbIds(term: string, movies: MovieCandidate[], series: SeriesCandidate[], priority: number): Promise<Map<string, string | null>> {
   // Best title matches go first, so a window that closes early costs the loosest ones.
   const queue = rankSearchResults([
     ...movies.map(movie => ({ Name: movie.title, kind: 'movie' as Kind, tmdbId: movie.tmdbId })),
@@ -223,20 +227,20 @@ async function resolveImdbIds(term: string, movies: MovieCandidate[], series: Se
   const worker = async () => {
     while (next < queue.length && !window.aborted) {
       const { kind, tmdbId } = queue[next++]
-      found.set(`${kind}:${tmdbId}`, await imdbIdFor(kind, tmdbId, window))
+      found.set(`${kind}:${tmdbId}`, await imdbIdFor(kind, tmdbId, window, priority))
     }
   }
   await Promise.all(Array.from({ length: Math.min(REQUESTS_IN_FLIGHT, queue.length) }, worker))
   return found
 }
 
-function imdbIdFor(kind: Kind, tmdbId: number, window: AbortSignal): Promise<string | null> {
+function imdbIdFor(kind: Kind, tmdbId: number, window: AbortSignal, priority: number): Promise<string | null> {
   const key = `${kind}:${tmdbId}`
   const known = imdbCache.get(key)
   if (known && known.expiresAt > Date.now()) return Promise.resolve(known.imdbId)
   const pending = lookupsInFlight.get(key)
   if (pending) return pending
-  const lookup = tmdbSearchGet(`/${kind}/${tmdbId}/external_ids`, {}, window)
+  const lookup = tmdbSearchGet(`/${kind}/${tmdbId}/external_ids`, {}, window, priority)
     .then(raw => {
       const imdbId = isRecord(raw) && typeof raw.imdb_id === 'string' && IMDB_ID.test(raw.imdb_id) ? raw.imdb_id : ''
       // Deleted first, so a refreshed entry goes to the back of the eviction order.
@@ -272,8 +276,8 @@ function withImdbIds<T extends { tmdbId: number }>(
 }
 
 // The key travels in the query string, so every error names the path alone.
-async function tmdbSearchGet(path: string, params: Record<string, string>, signal: AbortSignal): Promise<unknown> {
-  if (!await takeTurn(signal)) throw new Error(`${path} timed out waiting for its turn`)
+async function tmdbSearchGet(path: string, params: Record<string, string>, signal: AbortSignal, priority: number): Promise<unknown> {
+  if (!await takeTurn(signal, priority)) throw new Error(`${path} timed out waiting for its turn`)
   try {
     const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
     let res: Response
@@ -298,30 +302,39 @@ async function tmdbSearchGet(path: string, params: Record<string, string>, signa
 
 // False when the signal gave up first. A request that gives up leaves the line,
 // so a search the user has typed past holds no place in it.
-function takeTurn(signal: AbortSignal): Promise<boolean> {
+function takeTurn(signal: AbortSignal, priority: number): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false)
   if (requestsInFlight < REQUESTS_IN_FLIGHT) {
     requestsInFlight++
     return Promise.resolve(true)
   }
   return new Promise(resolve => {
-    const start = () => {
-      signal.removeEventListener('abort', leave)
-      requestsInFlight++
-      resolve(true)
+    const waiter = {
+      priority,
+      start: () => {
+        signal.removeEventListener('abort', leave)
+        requestsInFlight++
+        resolve(true)
+      },
     }
     const leave = () => {
-      waitingForTurn.splice(waitingForTurn.indexOf(start), 1)
+      waitingForTurn.splice(waitingForTurn.indexOf(waiter), 1)
       resolve(false)
     }
     signal.addEventListener('abort', leave, { once: true })
-    waitingForTurn.push(start)
+    waitingForTurn.push(waiter)
   })
 }
 
+// The newest search first, and within one search the order it asked in, which
+// puts its best title matches first.
 function endTurn(): void {
   requestsInFlight--
-  waitingForTurn.shift()?.()
+  let next = -1
+  for (let i = 0; i < waitingForTurn.length; i++) {
+    if (next < 0 || waitingForTurn[i].priority > waitingForTurn[next].priority) next = i
+  }
+  if (next >= 0) waitingForTurn.splice(next, 1)[0].start()
 }
 
 // Search runs on every keystroke, so an outage would otherwise log a line per key.
