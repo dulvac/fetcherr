@@ -27,6 +27,10 @@ const NO_IMDB_ID_TTL_MS = 24 * 60 * 60 * 1000
 // whole process, because every keystroke starts a new search.
 const REQUESTS_IN_FLIGHT = 10
 const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
+// After a search call fails, TMDB is not asked for this long. Failures are not
+// cached, so a TMDB that hangs would otherwise cost every keystroke a timeout
+// before Cinemeta is asked.
+const REST_AFTER_FAILURE_MS = 60 * 1000
 const IMDB_ID = /^tt\d+$/
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 // TMDB sends bare image paths. Anything else did not come from TMDB and is not
@@ -88,6 +92,7 @@ const pageCache = new Map<string, { promise: Promise<Page<unknown>>; expiresAt: 
 const imdbCache = new Map<string, { imdbId: string; expiresAt: number }>()
 const lookupsInFlight = new Map<string, Promise<string | null>>()
 let lastFailureLogAt: number | undefined
+let restingUntil: number | undefined
 let requestsInFlight = 0
 // Each search's number, higher for newer ones. A user typing a title starts a
 // search per keystroke and sees only the last, so the newest goes first.
@@ -95,14 +100,18 @@ let searchesStarted = 0
 const waitingForTurn: Array<{ priority: number; start: () => void }> = []
 
 // Called on every settings save. A new key should be tried, and its failure
-// logged, on the next keystroke rather than ten minutes later.
+// logged, on the next keystroke, not after a rest or ten minutes later.
 export function clearTmdbSearchCache(): void {
   pageCache.clear()
   lastFailureLogAt = undefined
+  restingUntil = undefined
 }
 
 export async function findTmdbTitles(term: string, types: StremioMediaType[], skip: TmdbSkip = NOTHING_TO_SKIP): Promise<TmdbHits> {
   if (!term.trim()) return { movies: [], series: [] }
+  if (resting()) {
+    return { movies: types.includes('movie') ? null : [], series: types.includes('series') ? null : [] }
+  }
   const priority = ++searchesStarted
   const [movies, series] = await Promise.all([
     types.includes('movie') ? searchType('movie', term, parseMovie, priority) : Promise.resolve([] as MovieCandidate[]),
@@ -167,7 +176,7 @@ async function searchType<T>(kind: Kind, term: string, parse: (entry: unknown) =
   try {
     first = await cachedPage(kind, term, 1, parse, priority)
   } catch (err) {
-    logFailure(err)
+    searchFailed(err)
     return null
   }
   if (first.totalPages < 2) return first.results
@@ -176,7 +185,7 @@ async function searchType<T>(kind: Kind, term: string, parse: (entry: unknown) =
     return [...first.results, ...second.results]
   } catch (err) {
     // Page 1 is an answer, so Cinemeta is not asked for this type.
-    logFailure(err)
+    searchFailed(err)
     return first.results
   }
 }
@@ -189,8 +198,9 @@ function cachedPage<T>(kind: Kind, term: string, page: number, parse: (entry: un
   // Deleted first, so the fresh entry goes to the back of the eviction order.
   pageCache.delete(key)
   const path = `/search/${kind}`
+  // The same length of time for waiting in line and, once sent, for TMDB's answer.
   const promise = tmdbSearchGet(path, { query: term, language: 'en-US', include_adult: 'false', page: String(page) },
-    AbortSignal.timeout(config.tmdbSearchTimeoutMs), priority).then(raw => parsePage(raw, parse, path))
+    AbortSignal.timeout(config.tmdbSearchTimeoutMs), priority, config.tmdbSearchTimeoutMs).then(raw => parsePage(raw, parse, path))
   const entry = { promise: promise as Promise<Page<unknown>>, expiresAt: now + PAGE_TTL_MS }
   pageCache.set(key, entry)
   trimCacheMap(pageCache, PAGE_CACHE_MAX)
@@ -287,9 +297,16 @@ function withImdbIds<T extends { tmdbId: number }>(
   return hits
 }
 
+// Our own line ran out of time, not TMDB, so TMDB is not rested for it.
+class NoTurnInTime extends Error {}
+
 // The key travels in the query string, so every error names the path alone.
-async function tmdbSearchGet(path: string, params: Record<string, string>, signal: AbortSignal, priority: number): Promise<unknown> {
-  if (!await takeTurn(signal, priority)) throw new Error(`${path} timed out waiting for its turn`)
+// `wait` bounds the time in line, and the request too unless it has a timeout
+// of its own, which starts once it is sent. A request that waited behind newer
+// searches then times out on TMDB's answer alone.
+async function tmdbSearchGet(path: string, params: Record<string, string>, wait: AbortSignal, priority: number, timeoutMs?: number): Promise<unknown> {
+  if (!await takeTurn(wait, priority)) throw new NoTurnInTime(`${path} timed out waiting for its turn`)
+  const signal = timeoutMs === undefined ? wait : AbortSignal.timeout(timeoutMs)
   try {
     const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
     let res: Response
@@ -347,6 +364,22 @@ function endTurn(): void {
     if (next < 0 || waitingForTurn[i].priority > waitingForTurn[next].priority) next = i
   }
   if (next >= 0) waitingForTurn.splice(next, 1)[0].start()
+}
+
+function searchFailed(reason: unknown): void {
+  if (reason instanceof NoTurnInTime) logFailure(reason)
+  else rest(reason)
+}
+
+function resting(): boolean {
+  return restingUntil !== undefined && Date.now() < restingUntil
+}
+
+// One line per rest, so at most one a minute however many keystrokes fail.
+function rest(reason: unknown): void {
+  if (resting()) return
+  restingUntil = Date.now() + REST_AFTER_FAILURE_MS
+  console.warn(`tmdb search: ${reason instanceof Error ? reason.message : String(reason)}, so Cinemeta answers for the next ${REST_AFTER_FAILURE_MS / 1000} s`)
 }
 
 // Search runs on every keystroke, so an outage would otherwise log a line per key.

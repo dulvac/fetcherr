@@ -337,24 +337,99 @@ test('slow lookups give up together inside one window', async t => {
   assert.equal(fake.count('movie-ids'), 10)
 })
 
-test('failures are logged once per ten minutes, without the key', async t => {
+test('after a failed search TMDB rests for a minute, and Cinemeta answers', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  t.mock.method(console, 'warn', () => {})
+  const fake = await fakeTmdb(t, { movies: [{ id: 3901, title: 'Heat', imdb: 'tt3901' }] }, { tmdbSearchTimeoutMs: 300 })
+  fake.setMode('movie', 'slow')
+  assert.equal((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies, null)
+  fake.setMode('movie', 'answers')
+  // Without the rest, every keystroke would wait out the timeout again.
+  const started = Date.now()
+  assert.deepEqual(await findTmdbTitles('heat w', ['movie', 'series'], NO_SKIP), { movies: null, series: null })
+  assert.deepEqual(await findTmdbTitles('heat w', ['movie'], NO_SKIP), { movies: null, series: [] })
+  t.mock.timers.tick(60_000 - 1)
+  assert.equal((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies, null)
+  assert.deepEqual([fake.count('movie'), fake.count('tv')], [1, 0])
+  t.mock.timers.tick(1)
+  assert.deepEqual((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies?.map(m => m.tmdbId), [3901])
+  assert.equal(fake.count('movie'), 2)
+  assert.ok(Date.now() - started >= 60_000)
+})
+
+test('a search that gave up waiting for its turn does not rest TMDB', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const busy = numbered(10, 4001, n => `Agent ${n}`)
+  const fake = await fakeTmdb(t, { movies: [...busy, { id: 4101, title: 'Heat', imdb: 'tt4101' }] })
+  for (const movie of busy) fake.holdLookups.add(movie.id)
+  const agent = findTmdbTitles('agent', ['movie'], NO_SKIP)
+  await until(() => fake.held() === 10, 'ten held lookups')
+  config.tmdbSearchTimeoutMs = 300
+  assert.equal((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies, null)
+  fake.release()
+  await agent
+  // TMDB itself never failed, so the next keystroke asks it.
+  assert.deepEqual((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies?.map(m => m.tmdbId), [4101])
+})
+
+test('a search page that waited for its turn still has the whole timeout once sent', async t => {
+  const busy = numbered(10, 4201, n => `Agent ${n}`)
+  const fake = await fakeTmdb(t, { movies: [...busy, { id: 4301, title: 'Heat', imdb: 'tt4301' }], slowMs: 300 })
+  fake.setMode('movie', 'slow')
+  for (const movie of busy) fake.holdLookups.add(movie.id)
+  const agent = findTmdbTitles('agent', ['movie'], NO_SKIP)
+  await until(() => fake.held() === 10, 'ten held lookups')
+  config.tmdbSearchTimeoutMs = 400
+  const heat = findTmdbTitles('heat', ['movie'], NO_SKIP)
+  // 150 ms in line and 300 in flight: more than 400 in all, but TMDB answered
+  // well inside its timeout.
+  await sleep(150)
+  fake.release()
+  assert.deepEqual((await heat).movies?.map(m => m.tmdbId), [4301])
+  await agent
+})
+
+test('TMDB resting is logged once per minute at most, without the key', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
   const warn = t.mock.method(console, 'warn', () => {})
   const fake = await fakeTmdb(t, {}, { tmdbApiKey: 'wrong-key-5f3a9c' })
   const lines = () => warn.mock.calls.map(call => String(call.arguments[0])).filter(line => line.startsWith('tmdb search: '))
 
+  // Both types fail together, and that is one line.
   await findTmdbTitles('heat', ['movie', 'series'], NO_SKIP)
   assert.equal(lines().length, 1)
-  assert.match(lines()[0], /HTTP 401/)
-  // Failures are not cached, so this asks again, and still logs nothing new.
+  assert.match(lines()[0], /HTTP 401.*Cinemeta/)
+  t.mock.timers.tick(30_000)
   await findTmdbTitles('heat', ['movie', 'series'], NO_SKIP)
+  assert.equal(fake.count('movie'), 1)
+  assert.equal(lines().length, 1)
+
+  t.mock.timers.tick(30_000)
+  await findTmdbTitles('heat', ['movie'], NO_SKIP)
   assert.equal(fake.count('movie'), 2)
+  assert.equal(lines().length, 2)
+  assert.ok(lines().every(line => !line.includes('wrong-key-5f3a9c')))
+})
+
+test('failed lookups are logged once per ten minutes, without the key', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const warn = t.mock.method(console, 'warn', () => {})
+  const fake = await fakeTmdb(t, { movies: [{ id: 3951, title: 'Heat', imdb: 'tt3951' }] })
+  const lines = () => warn.mock.calls.map(call => String(call.arguments[0])).filter(line => line.startsWith('tmdb search: '))
+  fake.failLookups.add(3951)
+
+  await findTmdbTitles('heat', ['movie'], NO_SKIP)
+  assert.equal(lines().length, 1)
+  assert.match(lines()[0], /external_ids answered HTTP 500/)
+  // A failed lookup is not cached, so this asks again, and still logs nothing new.
+  await findTmdbTitles('heat', ['movie'], NO_SKIP)
+  assert.equal(fake.count('movie-ids'), 2)
   assert.equal(lines().length, 1)
 
   t.mock.timers.tick(10 * 60 * 1000)
   await findTmdbTitles('heat', ['movie'], NO_SKIP)
   assert.equal(lines().length, 2)
-  assert.ok(lines().every(line => !line.includes('wrong-key-5f3a9c')))
+  assert.ok(lines().every(line => !line.includes(FAKE_TMDB_KEY)))
 })
 
 test('malformed results are skipped, not fatal', async t => {
