@@ -58,14 +58,16 @@ test('the build default is English only, and empty is kept distinct from unset',
   assert.deepEqual(parseSubtitleLanguageSetting('fr,de'), ['fre', 'ger'])
 })
 
-test('the per-language cap defaults to 3 and stays within 1..20', () => {
+test('the per-language cap defaults to 3 and stays within 1..10, the pool it picks from', () => {
   assert.equal(parseSubtitleMaxPerLanguage(undefined), 3)
   assert.equal(parseSubtitleMaxPerLanguage(''), 3)
   assert.equal(parseSubtitleMaxPerLanguage('abc'), 3)
   assert.equal(parseSubtitleMaxPerLanguage('0'), 1)
   assert.equal(parseSubtitleMaxPerLanguage('-4'), 1)
   assert.equal(parseSubtitleMaxPerLanguage('7'), 7)
-  assert.equal(parseSubtitleMaxPerLanguage('99'), 20)
+  assert.equal(parseSubtitleMaxPerLanguage('10'), 10)
+  assert.equal(parseSubtitleMaxPerLanguage('11'), 10)
+  assert.equal(parseSubtitleMaxPerLanguage('99'), 10)
 })
 
 test('display names and the choices for an account preference', () => {

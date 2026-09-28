@@ -83,9 +83,9 @@ test('an empty list is stored as empty, which means no filter', async () => {
   await app.close()
 })
 
-test('the per-language cap is clamped to 1..20', async () => {
+test('the per-language cap is clamped to 1..10', async () => {
   const app = await buildApp()
-  const cases: Array<[string | number, number]> = [[0, 1], ['99', 20], ['abc', 3], [5, 5]]
+  const cases: Array<[string | number, number]> = [[0, 1], ['99', 10], [11, 10], ['abc', 3], [5, 5]]
   for (const [input, stored] of cases) {
     await save(app, { subtitleMaxPerLanguage: input })
     assert.equal(config.subtitleMaxPerLanguage, stored, String(input))

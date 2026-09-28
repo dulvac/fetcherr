@@ -1,4 +1,4 @@
-import { config } from './config.js'
+import { config, SUBTITLE_POOL_PER_LANGUAGE } from './config.js'
 import { fetchManifest, providerBases, providerLabel, type StremioManifest, type StremioMediaType } from './sootio.js'
 import { normalizeSubtitleLanguage, subtitleLanguageName } from './subtitle-lang.js'
 
@@ -39,10 +39,6 @@ const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
 // into a URL path, so nothing else gets through.
 const EXTERNAL_ID = /^tt\d{7,10}(?::\d{1,4}:\d{1,4})?$/
 const FORMATS = new Set(['srt', 'vtt', 'ass', 'ssa', 'sub'])
-// Kept per language before any version is looked at: enough for each version to
-// find the file made for it, while subtitleMaxPerLanguage is how many each
-// version then shows.
-export const SUBTITLE_POOL_PER_LANGUAGE = 10
 
 type CacheEntry = { promise: Promise<SubtitleTrack[]>; expiresAt: number }
 const cache = new Map<string, CacheEntry>()
