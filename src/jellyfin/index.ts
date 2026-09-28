@@ -37,7 +37,7 @@ import {
   stremioOfficialRating,
 } from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
-import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, type TmdbHits, type TmdbMovieHit, type TmdbSeriesHit } from '../tmdb-search.js'
+import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, withTmdbTurn, type TmdbHits, type TmdbMovieHit, type TmdbSeriesHit } from '../tmdb-search.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -2115,14 +2115,24 @@ async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limite
     if ('movie' in candidate) {
       const movie = tmdbMovieToMovie(candidate.movie)
       if (limited) {
-        movie.officialRating = await fetchMovieOfficialRatingByIds({ tmdbId: movie.tmdbId, imdbId: movie.imdbId })
+        // One turn from the shared TMDB budget, same as every search lookup, so a
+        // kids account cannot outrun the limit by typing a title.
+        const rating = await withTmdbTurn(
+          () => fetchMovieOfficialRatingByIds({ tmdbId: movie.tmdbId, imdbId: movie.imdbId }),
+          AbortSignal.timeout(config.tmdbSearchTimeoutMs),
+        )
+        movie.officialRating = rating ?? ''
         // An empty rating is refused, as for every other title a limited account sees.
+        // A check that got no turn, or timed out, is empty the same way.
         if (!canUserAccessMovie(user, movie)) return null
       }
       return searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)
     }
     const meta = tmdbSeriesToMeta(candidate.series)
-    if (!await canUserAccessStremioMeta(user, meta, 'series')) return null
+    const allowed = limited
+      ? await withTmdbTurn(() => canUserAccessStremioMeta(user, meta, 'series'), AbortSignal.timeout(config.tmdbSearchTimeoutMs))
+      : await canUserAccessStremioMeta(user, meta, 'series')
+    if (!allowed) return null
     const rating = await stremioRatingForVisibleMeta(user, meta, 'series')
     return stremioSearchMetaToItem(await hydrateStremioSeriesMeta(meta), 'series', undefined, { officialRating: rating }) as Record<string, unknown>
   } catch {
