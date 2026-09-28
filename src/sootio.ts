@@ -44,6 +44,8 @@ export interface StremioMeta {
   season?: number
   episode?: number
   number?: number
+  // Set only by TMDB search, so a rating check can skip the IMDb lookup.
+  tmdbId?: number
 }
 
 interface StremioCatalog {
