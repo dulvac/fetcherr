@@ -137,7 +137,17 @@ test('series are ranked by title before the cap of 20, past titles with no IMDb 
   const fake = await fakeTmdb(t, { series: [...loose, ...exactNoId, ...exact] })
   const hits = await findTmdbTitles('monk', ['series'], NO_SKIP)
   assert.deepEqual(hits.series?.map(s => s.tmdbId), [1931, 1932, 1933, ...loose.slice(0, 17).map(s => s.id)])
-  assert.equal(fake.count('tv-ids'), 33)
+  // The five exact titles with no id, then the twenty that have one.
+  assert.ok(fake.count('tv-ids') >= 25, `${fake.count('tv-ids')} lookups`)
+})
+
+test('series lookups stop once twenty series have an IMDb id', async t => {
+  const shows = Array.from({ length: 40 }, (_, i) => ({ id: 1951 + i, name: `Agent Show ${i + 1}`, imdb: `tt${1951 + i}` }))
+  const fake = await fakeTmdb(t, { series: shows })
+  const hits = await findTmdbTitles('agent', ['series'], NO_SKIP)
+  assert.deepEqual(hits.series?.map(s => s.tmdbId), shows.slice(0, 20).map(s => s.id))
+  // Up to nine more were already on their way when the twentieth answered.
+  assert.ok(fake.count('tv-ids') <= 29, `${fake.count('tv-ids')} lookups`)
 })
 
 test('library titles are skipped before any lookup', async t => {
