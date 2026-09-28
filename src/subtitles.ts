@@ -200,13 +200,37 @@ function releaseOf(entry: RawSubtitle): string {
   return fileName.replace(/\.(?:srt|vtt|ass|ssa|sub|smi|txt)$/i, '')
 }
 
-// Filter to the configured languages, collapse the same URL offered twice, keep
-// provider order and then each provider's own order within a language, and keep
-// the pool. Languages come out in the configured order, or in order of first
-// appearance when there is no filter.
+// An entry that is the same underlying OpenSubtitles file as another, so that
+// one is dropped as soon as either identifies it: an OpenSubtitles v3+ file's
+// sub_id, or, for a strem.io URL, an OpenSubtitles v3 file's id (v3 files are
+// served from subs5.strem.io). Anything else has no file id of its own, so a
+// coincidence of ids on other providers is never mistaken for the same file.
+function openSubtitlesFileId(entry: RawSubtitle, url: string): string | null {
+  const digits = (value: unknown): string | null => {
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) return String(value)
+    if (typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0) return String(Number(value))
+    return null
+  }
+  const subId = digits(entry.sub_id)
+  if (subId) return subId
+  const host = new URL(url).hostname.toLowerCase()
+  if (host === 'strem.io' || host.endsWith('.strem.io')) return digits(entry.id)
+  return null
+}
+
+// Filter to the configured languages, then fill each language's pool in rounds:
+// round one takes every provider's first remaining entry in provider order,
+// round two each provider's next, and so on, until the pool holds
+// SUBTITLE_POOL_PER_LANGUAGE or every provider is exhausted. A duplicate (the
+// same URL, or the same OpenSubtitles file under two answers) is dropped where
+// it falls, without giving its provider another turn in the same round.
+// Languages come out in the configured order, or in order of first appearance
+// when there is no filter.
 function selectTracks(answers: RawSubtitle[][], languages: readonly string[]): SubtitleTrack[] {
-  const byLanguage = new Map<string, SubtitleTrack[]>()
-  const seenUrls = new Set<string>()
+  type Candidate = { track: SubtitleTrack; url: string; fileId: string | null }
+  // Per language, one list per provider index, in that provider's own order.
+  const byLanguage = new Map<string, Candidate[][]>()
+
   for (const [providerIdx, entries] of answers.entries()) {
     for (const [entryIdx, entry] of entries.entries()) {
       const url = usableUrl(entry.url)
@@ -218,24 +242,44 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[]): S
       // them; neither plays reliably as an external text track, and skipping
       // them here lets the pool fill with files that do.
       if (format === 'sub') continue
-      if (seenUrls.has(url)) continue
-      seenUrls.add(url)
-      let list = byLanguage.get(lang)
+      const ownId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : String(entryIdx)
+      const track: SubtitleTrack = { id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format, release: releaseOf(entry) }
+      let perProvider = byLanguage.get(lang)
+      if (!perProvider) {
+        perProvider = []
+        byLanguage.set(lang, perProvider)
+      }
+      let list = perProvider[providerIdx]
       if (!list) {
         list = []
-        byLanguage.set(lang, list)
+        perProvider[providerIdx] = list
       }
-      if (list.length >= SUBTITLE_POOL_PER_LANGUAGE) continue
-      const ownId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : String(entryIdx)
-      list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format, release: releaseOf(entry) })
+      list.push({ track, url, fileId: openSubtitlesFileId(entry, url) })
     }
   }
 
+  const seenUrls = new Set<string>()
+  const seenFileIds = new Set<string>()
   const tracks: SubtitleTrack[] = []
   for (const lang of languages.length ? languages : [...byLanguage.keys()]) {
-    const list = byLanguage.get(lang) ?? []
+    const perProvider = byLanguage.get(lang) ?? []
+    const pool: SubtitleTrack[] = []
+    for (let round = 0; pool.length < SUBTITLE_POOL_PER_LANGUAGE; round++) {
+      let anyProviderHadATurn = false
+      for (const list of perProvider) {
+        if (!list || round >= list.length) continue
+        anyProviderHadATurn = true
+        const candidate = list[round]
+        if (seenUrls.has(candidate.url) || (candidate.fileId !== null && seenFileIds.has(candidate.fileId))) continue
+        seenUrls.add(candidate.url)
+        if (candidate.fileId !== null) seenFileIds.add(candidate.fileId)
+        pool.push(candidate.track)
+        if (pool.length >= SUBTITLE_POOL_PER_LANGUAGE) break
+      }
+      if (!anyProviderHadATurn) break
+    }
     const name = subtitleLanguageName(lang)
-    list.forEach((track, i) => tracks.push({ ...track, label: list.length > 1 ? `${name} ${i + 1}` : name }))
+    pool.forEach((track, i) => tracks.push({ ...track, label: pool.length > 1 ? `${name} ${i + 1}` : name }))
   }
   return tracks
 }
