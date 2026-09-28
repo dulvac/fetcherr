@@ -882,6 +882,9 @@ export function extractHashFromStreamUrl(url?: string): string | null {
     for (const segment of segments) {
       try {
         const decoded = JSON.parse(Buffer.from(decodeURIComponent(segment), 'base64').toString('utf-8')) as unknown
+        // A usenet stream's segment has the same shape, but its hash is a content
+        // hash of the NZB, not a torrent infohash.
+        if (decoded !== null && typeof decoded === 'object' && (decoded as Record<string, unknown>).type === 'usenet') return null
         if (decoded !== null && typeof decoded === 'object' && 'hash' in decoded) {
           const hash = normalizeInfoHash((decoded as Record<string, unknown>).hash)
           if (hash) return hash
