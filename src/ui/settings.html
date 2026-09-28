@@ -126,6 +126,13 @@
       <textarea id="subtitleProviderUrls" rows="3" placeholder="https://opensubtitles-v3.strem.io"></textarea>
       <div class="field-note">One Stremio add-on URL per line. Leave empty to use the stream add-ons above that offer subtitles.</div>
     </div>
+    <label class="check-item field" for="subtitleGestdown">
+      <input id="subtitleGestdown" type="checkbox">
+      <div class="check-meta">
+        <div class="check-title">Also ask Gestdown (Addic7ed) for TV episodes</div>
+        <div class="check-slug">Subtitles made for specific TV releases, mostly English and French. No key needed.</div>
+      </div>
+    </label>
     <div class="field">
       <label for="subtitleLanguages">Subtitle Languages</label>
       <input id="subtitleLanguages" type="text" placeholder="en, fr, ro, de">
@@ -1078,6 +1085,7 @@
     document.getElementById('mediaSourceLimit').value = String([5, 10, 20].includes(d.mediaSourceLimit) ? d.mediaSourceLimit : 10)
     syncMediaSourceLimitVisibility()
     document.getElementById('subtitleProviderUrls').value = d.subtitleProviderUrls || ''
+    document.getElementById('subtitleGestdown').checked = d.subtitleGestdown === true
     // ?? rather than ||, because an empty list is a real value: no language filter.
     document.getElementById('subtitleLanguages').value = d.subtitleLanguages ?? 'eng'
     document.getElementById('subtitleMaxPerLanguage').value = String(d.subtitleMaxPerLanguage || 3)
@@ -1848,6 +1856,7 @@
       discoverPresentationMode: document.getElementById('discoverPresentationMode').value,
       mediaSourceLimit: document.getElementById('mediaSourceLimit').value,
       subtitleProviderUrls: document.getElementById('subtitleProviderUrls').value,
+      subtitleGestdown: document.getElementById('subtitleGestdown').checked,
       subtitleLanguages: document.getElementById('subtitleLanguages').value,
       subtitleMaxPerLanguage: document.getElementById('subtitleMaxPerLanguage').value,
       serverUrl:         document.getElementById('serverUrl').value,

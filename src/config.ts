@@ -356,6 +356,10 @@ export const config = {
   subtitleProviderUrls: parseStreamProviderUrls(process.env.SUBTITLE_PROVIDER_URLS ?? ''),
   subtitleLanguages: parseSubtitleLanguageSetting(process.env.SUBTITLE_LANGUAGES),
   subtitleMaxPerLanguage: parseSubtitleMaxPerLanguage(process.env.SUBTITLE_MAX_PER_LANGUAGE),
+  // Off by default: the owner turns it on in Settings once deployed.
+  subtitleGestdown: parseBooleanSetting(process.env.SUBTITLE_GESTDOWN, false),
+  // No Settings field of its own: it exists so tests can point Gestdown at a fake.
+  gestdownBaseUrl: (process.env.GESTDOWN_BASE_URL || 'https://api.gestdown.info').replace(/\/+$/, ''),
   // Overridable because what counts as slow depends on the provider and the
   // network in between, not on Fetcherr.
   subtitleTimeoutMs: parsePositiveIntegerSetting(process.env.SUBTITLE_TIMEOUT_MS, 4000),
