@@ -4,9 +4,9 @@ import { attachSubtitleStreams, parsePlayPath, subtitleContentType } from '../sr
 import type { SubtitleTrack } from '../src/subtitles.js'
 
 const TRACKS: SubtitleTrack[] = [
-  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt' },
-  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt' },
-  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt' },
+  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt', release: '' },
+  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt', release: '' },
+  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt', release: '' },
 ]
 
 const source = () => ({
@@ -61,6 +61,20 @@ test('subtitle streams follow the existing streams and point at this server', ()
     [4, 'vtt', '/Videos/item-1/src/Subtitles/4/0/Stream.vtt'],
   ])
   assert.equal('DefaultSubtitleStreamIndex' in out, false)
+})
+
+test('each subtitle stream names the release its file was made for', () => {
+  const tracks: SubtitleTrack[] = [
+    { ...TRACKS[0], release: 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV' },
+    { ...TRACKS[1], release: 'The Jetsons Complete Series' },
+    TRACKS[2],
+  ]
+  const [out] = attachSubtitleStreams([source()], tracks, '', 'item-1')
+  assert.deepEqual((out.MediaStreams as Stream[]).slice(2).map(stream => [stream.DisplayTitle, stream.Title]), [
+    ['English 1 · 720p WEB-DL myTV', 'English 1 · 720p WEB-DL myTV'],
+    ['English 2 · The Jetsons Complete Series', 'English 2 · The Jetsons Complete Series'],
+    ['Romanian', 'Romanian'],
+  ])
 })
 
 test('a preferred language selects its first track and nothing else', () => {

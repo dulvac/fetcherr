@@ -7,6 +7,8 @@ import {
 import { buildPlaybackOrigin } from './play-auth.js'
 import { extractHashFromStream, type Stream, type StremioMediaType, type StremioMeta } from './sootio.js'
 import { canUserAccessStremioMeta } from './stremio-rating.js'
+import { subtitleLanguageName } from './subtitle-lang.js'
+import { displayLabel } from './subtitle-streams.js'
 import type { SubtitleExtra, SubtitleTrack } from './subtitles.js'
 
 // Bumped when the manifest changes, so installed clients can tell. 1.1.0 added
@@ -356,7 +358,10 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
       app.log.warn(`stremio: subtitle lookup failed for ${parsed.externalId} (${user.username}): ${err}`)
       return empty()
     }
-    const subtitles = orderPreferredFirst(tracks, user.subtitleLanguage)
+    // Labelled before the preference moves a language forward, so each track
+    // reads as it does to a Jellyfin client playing the same file.
+    const labelled = tracks.map((track, i) => ({ ...track, label: displayLabel(tracks, i, subtitleLanguageName(track.lang)) }))
+    const subtitles = orderPreferredFirst(labelled, user.subtitleLanguage)
       .map(track => ({ id: track.id, url: track.url, lang: track.lang, label: track.label }))
     return reply.headers(ADDON_HEADERS).send({ subtitles })
   }

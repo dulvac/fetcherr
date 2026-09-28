@@ -17,6 +17,9 @@ export interface SubtitleTrack {
   label: string
   // srt, vtt, ass, ssa or sub. Passed through, never converted.
   format: string
+  // The release the file was made for, as the provider names it, or '' when it
+  // does not. What the label shows and what ranking compares to the playing file.
+  release: string
 }
 
 // File details a Stremio client sends so a provider can match by hash.
@@ -177,6 +180,15 @@ function formatOf(url: string, fileName: unknown): string {
   return 'srt'
 }
 
+// OpenSubtitles names the release in movieReleaseName. Its file name usually
+// repeats it, so that stands in when the release name is missing.
+function releaseOf(entry: RawSubtitle): string {
+  const named = typeof entry.movieReleaseName === 'string' ? entry.movieReleaseName.trim() : ''
+  if (named) return named
+  const fileName = typeof entry.subtitleFileName === 'string' ? entry.subtitleFileName.trim() : ''
+  return fileName.replace(/\.(?:srt|vtt|ass|ssa|sub|smi|txt)$/i, '')
+}
+
 // Filter to the configured languages, collapse the same URL offered twice, keep
 // provider order and then each provider's own order within a language, and cap.
 // Languages come out in the configured order, or in order of first appearance
@@ -204,7 +216,7 @@ function selectTracks(answers: RawSubtitle[][], languages: readonly string[], ma
       }
       if (list.length >= maxPerLanguage) continue
       const ownId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : String(entryIdx)
-      list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format })
+      list.push({ id: `${providerIdx + 1}-${ownId}`, url, lang, label: '', format, release: releaseOf(entry) })
     }
   }
 

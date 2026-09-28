@@ -36,9 +36,9 @@ const revoked = db.createUser('revoked', 'pw', 'user', 'unrestricted')
 const revokedToken = db.mintStremioToken(revoked.id)
 
 const TRACKS: SubtitleTrack[] = [
-  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt' },
-  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt' },
-  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt' },
+  { id: '1-a', url: 'https://subs.example/a', lang: 'eng', label: 'English 1', format: 'srt', release: '' },
+  { id: '1-b', url: 'https://subs.example/b', lang: 'eng', label: 'English 2', format: 'srt', release: '' },
+  { id: '1-c', url: 'https://subs.example/c.vtt', lang: 'rum', label: 'Romanian', format: 'vtt', release: '' },
 ]
 
 // The router options src/index.ts:38-43 builds, so the tests measure what is deployed.
@@ -88,6 +88,25 @@ test('an episode is looked up by its canonical stream id', async () => {
 test('the preferred language comes first, the rest keep their order', async () => {
   const res = await get(`/stremio/${mum.token}/subtitles/movie/tt0111161.json`)
   assert.deepEqual(res.json().subtitles.map((entry: { id: string }) => entry.id), ['1-c', '1-a', '1-b'])
+})
+
+// Two English files made for different releases of Monk S01E01, as the official
+// OpenSubtitles addon lists them.
+const RELEASED: SubtitleTrack[] = [
+  { ...TRACKS[0], release: 'Monk S01E01E02 Mr. Monk and the Candidate Part 1_2.DVDRip.NonHI.en.UNIV' },
+  { ...TRACKS[1], release: 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV' },
+  TRACKS[2],
+]
+const labels = (res: { json: () => { subtitles: Array<{ id: string; label: string }> } }) =>
+  res.json().subtitles.map(entry => [entry.id, entry.label])
+
+test('each label names the release its file was made for, as on Jellyfin', async () => {
+  const res = await get(`/stremio/${friend.token}/subtitles/movie/tt0111161.json`, async () => RELEASED)
+  assert.deepEqual(labels(res), [
+    ['1-a', 'English 1 · DVDRip'],
+    ['1-b', 'English 2 · 720p WEB-DL myTV'],
+    ['1-c', 'Romanian'],
+  ])
 })
 
 test('a bad token and a revoked account are indistinguishable', async () => {
