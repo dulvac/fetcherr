@@ -1,4 +1,4 @@
-import Fastify from 'fastify'
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import { parseTorrentTitle, type ParsedResult as ParsedTorrentTitleResult } from '@viren070/parse-torrent-title'
 import { createHash } from 'node:crypto'
 import { collectStreamProviderUrls, config, isListPresentationEnabled, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists, parseTraktListModes, parseStremioSearchSource, parseSubtitleLanguageSetting, parseSubtitleMaxPerLanguage } from './config.js'
@@ -35,6 +35,7 @@ import { segmentIndexForOffset } from './usenet/nzb-parser.js'
 
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
 import { streamMetadataText } from './streamUtils.js'
+import { isRelayedUrl, relayCandidates, relayStream, RelayMemory } from './stream-relay.js'
 
 const app = Fastify({
   logger: { level: 'info' },
@@ -1883,6 +1884,48 @@ async function resolvePlaybackCandidate(token: string | undefined, playPath: str
   }
 }
 
+// ── Relayed plays ─────────────────────────────────────────────────────────────
+// A resolved URL under STREAM_RELAY_PREFIXES is served from here instead of by
+// redirect (src/stream-relay.ts): aiostreams' native usenet streams live at a
+// LAN address remote players cannot reach. Keyed like the candidate resolver,
+// so a version picked in the player and the ranked default are kept apart.
+const relayMemory = new RelayMemory(PLAYBACK_ITEM_TTL_MS)
+
+function relayMemoryKey(playPath: string, candidate: string | undefined): string {
+  return candidate ? `${playPath}:candidate:${candidate}` : playPath
+}
+
+function relayOptions(key: string, playPath: string, label: string) {
+  return {
+    log: app.log,
+    label,
+    onRelayed: (url: string) => relayMemory.set(key, url),
+    // Forget the play and the resolution behind it, so the next request
+    // resolves the title again instead of retrying a dead URL.
+    onFailed: () => {
+      relayMemory.delete(key)
+      playbackPrewarmCache.delete(playPath)
+    },
+  }
+}
+
+// A play relayed before goes straight back to the URL that answered, so a seek
+// does not resolve the title again. Null when nothing is remembered.
+function relayRememberedPlay(req: FastifyRequest, reply: FastifyReply, key: string, playPath: string, label: string): Promise<FastifyReply> | null {
+  const url = relayMemory.get(key)
+  if (!url) return null
+  return relayStream(req, reply, [url], relayOptions(key, playPath, label))
+}
+
+function sendPlayback(req: FastifyRequest, reply: FastifyReply, key: string, playPath: string, label: string, resolved: PlayResolution) {
+  if (!isRelayedUrl(resolved.url, config.streamRelayPrefixes)) return reply.redirect(resolved.url, 302)
+  const client = playbackClientName(playPath)
+    || playbackClientFromHeaders(req.headers as Record<string, string | undefined>)
+    || 'unknown client'
+  app.log.info(`playback: relaying usenet for ${label} to ${client}`)
+  return relayStream(req, reply, relayCandidates(resolved.url, configuredAioOrigins()), relayOptions(key, playPath, label))
+}
+
 app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
   const { mediaType, externalId } = req.params as { mediaType: StremioMediaType; externalId: string }
   const query = req.query as { token?: string; expires?: string; candidate?: string } | undefined
@@ -1906,8 +1949,11 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
     app.log.info(`play: cached miss for Stremio ${mediaType} ${decodedExternalId} (${failedReason})`)
     return reply.code(404).send({ error: failedReason, message: 'No Streams Found' })
   }
+  const label = `Stremio ${mediaType} ${decodedExternalId}`
+  const relayKey = relayMemoryKey(playPath, query?.candidate)
+  const remembered = relayRememberedPlay(req, reply, relayKey, playPath, label)
+  if (remembered) return remembered
   try {
-    const label = `Stremio ${mediaType} ${decodedExternalId}`
     const clientName = playbackClientName(playPath)
     const selectedCandidate = await resolvePlaybackCandidate(query?.candidate, playPath)
     const resolved = selectedCandidate ?? await (async () => {
@@ -1916,7 +1962,7 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return sendPlayback(req, reply, relayKey, playPath, label, resolved)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1944,6 +1990,9 @@ app.get('/play/:imdbId', async (req, reply) => {
     app.log.info(`play: cached miss for ${imdbId} (${failedReason})`)
     return reply.code(404).send({ error: failedReason, message: 'No Streams Found' })
   }
+  const relayKey = relayMemoryKey(playPath, query?.candidate)
+  const remembered = relayRememberedPlay(req, reply, relayKey, playPath, imdbId)
+  if (remembered) return remembered
   app.log.info(`play: resolving stream for ${imdbId}`)
   try {
     const clientName = playbackClientName(playPath)
@@ -1954,7 +2003,7 @@ app.get('/play/:imdbId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return sendPlayback(req, reply, relayKey, playPath, imdbId, resolved)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1984,9 +2033,12 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   }
   const s = parseInt(season)
   const e = parseInt(episode)
+  const label = `${imdbId} S${s}E${e}`
+  const relayKey = relayMemoryKey(playPath, query?.candidate)
+  const remembered = relayRememberedPlay(req, reply, relayKey, playPath, label)
+  if (remembered) return remembered
   app.log.info(`play: resolving episode stream for ${imdbId} S${s}E${e}`)
   try {
-    const label = `${imdbId} S${s}E${e}`
     const clientName = playbackClientName(playPath)
     const selectedCandidate = await resolvePlaybackCandidate(query?.candidate, playPath)
     const resolved = selectedCandidate ?? await (async () => {
@@ -1995,7 +2047,7 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return sendPlayback(req, reply, relayKey, playPath, label, resolved)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -2041,6 +2093,12 @@ await app.register(stremioAddonRoutes, {
       resolvePlayableStream(streams, label, cacheKey, undefined, true))
     if (reused) app.log.info(`stremio: using in-flight resolver for ${label}`)
     const resolved = await promise
+    // The addon lists torrents only and answers every play with a redirect. A
+    // relayed URL is a LAN address a Stremio client cannot reach, so refuse it
+    // rather than send someone there.
+    if (isRelayedUrl(resolved.url, config.streamRelayPrefixes)) {
+      throw new Error('resolved to a relayed usenet stream, which the addon does not serve')
+    }
     // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
     // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back
     // while the client reports progress. A Stremio client cannot do that: it

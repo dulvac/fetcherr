@@ -718,3 +718,34 @@ test('twelve concurrent first-time requests for one title produce one row', asyn
   assert.equal(db.countStremioPlaysToday(user.id), 1)
   await app.close()
 })
+
+// A usenet stream as aiostreams returns it: a playback URL and a filename, no
+// infohash anywhere.
+const usenetStream = {
+  name: 'U',
+  url: 'http://aiostreams:3000/api/v1/debrid/playback/abc/u.mkv',
+  behaviorHints: { filename: 'u.mkv' },
+}
+
+test('a pin that is gone falls back to torrents only, never to a usenet stream', async () => {
+  const { token: tok } = playbackUser('usenet-fan-1')
+  const app = await buildApp({ fetchStreams: async () => [usenetStream, { name: 'A', infoHash: hashA }] })
+  const res = await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0068646/${'d'.repeat(40)}` })
+  assert.equal(res.statusCode, 302)
+  assert.deepEqual((resolvedWith?.streams as Array<{ name: string }>).map(stream => stream.name), ['A'])
+  await app.close()
+})
+
+test('a title with only usenet streams gets a 404 from play and spends no slot', async () => {
+  const { user, token: tok } = playbackUser('usenet-fan-2')
+  let called = false
+  const app = await buildApp({
+    fetchStreams: async () => [usenetStream],
+    resolvePlayback: async () => { called = true; return { url: 'https://cdn.torbox.test/file.mkv' } },
+  })
+  const res = await app.inject({ method: 'GET', url: `/stremio/${tok}/play/movie/tt0068646/${'e'.repeat(40)}` })
+  assert.equal(res.statusCode, 404)
+  assert.equal(called, false)
+  assert.equal(db.countStremioPlaysToday(user.id), 0)
+  await app.close()
+})

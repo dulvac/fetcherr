@@ -429,7 +429,10 @@ export async function stremioAddonRoutes(app: FastifyInstance, opts: StremioAddo
     const label = `stremio ${parsed.mediaType} ${parsed.externalId} (${user.username})`
     try {
       const streams = await opts.fetchStreams(parsed.mediaType, parsed.externalId)
-      const ordered = orderByPinnedHash(streams, wanted)
+      // The stream list only offers torrents (toStremioStreams skips anything
+      // without an infohash), so the fallback for a pin that is gone must not
+      // reach past them to a usenet stream.
+      const ordered = orderByPinnedHash(streams.filter(stream => extractHashFromStream(stream) !== null), wanted)
       if (!ordered.length) {
         if (releasableId !== null) releaseStremioPlay(releasableId)
         return reply.code(404).send({ error: 'No streams found' })
