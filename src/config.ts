@@ -290,11 +290,17 @@ export function parseSubtitleLanguageSetting(value: string | undefined): string[
   return languages
 }
 
-// Without a cap a popular title yields over a hundred tracks.
+// Kept per language before any version is looked at: enough for each version to
+// find the file made for it, while subtitleMaxPerLanguage is how many each
+// version then shows. Here rather than in subtitles.ts, which imports this file.
+export const SUBTITLE_POOL_PER_LANGUAGE = 10
+
+// Without a cap a popular title yields over a hundred tracks. Each version shows
+// its best few from the pool, so more than the pool holds would show no more.
 export function parseSubtitleMaxPerLanguage(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? '', 10)
   if (!Number.isFinite(parsed)) return 3
-  return Math.min(20, Math.max(1, parsed))
+  return Math.min(SUBTITLE_POOL_PER_LANGUAGE, Math.max(1, parsed))
 }
 
 export const config = {
