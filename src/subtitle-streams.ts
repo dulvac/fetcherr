@@ -108,8 +108,8 @@ export function attachSubtitleStreams(
         IsTextSubtitleStream: true,
         SupportsExternalStream: true,
         DeliveryMethod: 'External',
-        // Server-relative, as real Jellyfin sends it: the players on this network
-        // fetch subtitles from their own server and nowhere else.
+        // Server-relative, as real Jellyfin sends it: Infuse and VidHub, for
+        // example, fetch subtitles from their own server and nowhere else.
         DeliveryUrl: `/Videos/${itemId}/${sourceId}/Subtitles/${first + i}/0/Stream.${track.format}`,
         IsExternalUrl: false,
         IsDefault: i === defaultAt,

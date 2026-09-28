@@ -41,8 +41,8 @@ export interface TmdbMovieHit {
   tmdbId: number
   imdbId: string
   title: string
-  // Jellyfin's OriginalTitle: the title in its own language, which a French or
-  // Romanian term often matches better.
+  // Jellyfin's OriginalTitle: the title in its own language. A search term in
+  // that language often matches it better than the English title does.
   originalTitle: string
   originalLanguage: string
   releaseDate: string
