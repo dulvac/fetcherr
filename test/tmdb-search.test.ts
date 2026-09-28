@@ -263,6 +263,23 @@ test('a failed IMDb lookup drops only that title, and is asked again next time',
   ])
 })
 
+test('searches in flight together share one budget of ten TMDB requests', async t => {
+  // Every keystroke is a new search, and TMDB refuses more than about 20
+  // connections from one address.
+  const fake = await fakeTmdb(t, {
+    movies: [...numbered(40, 3201, n => `Agent ${n}`), ...numbered(40, 3301, n => `Spy ${n}`)],
+    slowMs: 40,
+  })
+  fake.setMode('movie', 'slow')
+  fake.setMode('movie-ids', 'slow')
+  const [agent, spy] = await Promise.all([
+    findTmdbTitles('agent', ['movie'], NO_SKIP),
+    findTmdbTitles('spy', ['movie'], NO_SKIP),
+  ])
+  assert.deepEqual([agent.movies?.length, spy.movies?.length], [40, 40])
+  assert.equal(fake.maxInFlight(), 10)
+})
+
 test('slow lookups give up together inside one window', async t => {
   t.mock.method(console, 'warn', () => {})
   const fake = await fakeTmdb(t, { movies: numbered(25, 2901, n => `Slow ${n}`) }, { tmdbSearchTimeoutMs: 300 })

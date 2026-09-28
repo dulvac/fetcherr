@@ -21,9 +21,11 @@ const IMDB_CACHE_MAX = 10_000
 // A missing one often gets filled in, above all for new titles, so "none" is
 // asked again after a day rather than hiding the title until a restart.
 const NO_IMDB_ID_TTL_MS = 24 * 60 * 60 * 1000
-// TMDB allows about 50 requests a second per key. Ten in flight ran 80 lookups
-// in 1.2 to 5.6 s on 2026-09-27 without a single refusal.
-const LOOKUPS_IN_FLIGHT = 10
+// TMDB allows about 50 requests a second per key and about 20 connections from
+// one address, which the poster route shares. Ten in flight ran 80 lookups in
+// 1.2 to 5.6 s on 2026-09-27 without a single refusal. It is one budget for the
+// whole process, because every keystroke starts a new search.
+const REQUESTS_IN_FLIGHT = 10
 const FAILURE_LOG_INTERVAL_MS = 10 * 60 * 1000
 const IMDB_ID = /^tt\d+$/
 const DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -86,6 +88,8 @@ const pageCache = new Map<string, { promise: Promise<Page<unknown>>; expiresAt: 
 const imdbCache = new Map<string, { imdbId: string; expiresAt: number }>()
 const lookupsInFlight = new Map<string, Promise<string | null>>()
 let lastFailureLogAt: number | undefined
+let requestsInFlight = 0
+const waitingForTurn: Array<() => void> = []
 
 // Called on every settings save. A new key should be tried, and its failure
 // logged, on the next keystroke rather than ten minutes later.
@@ -222,7 +226,7 @@ async function resolveImdbIds(term: string, movies: MovieCandidate[], series: Se
       found.set(`${kind}:${tmdbId}`, await imdbIdFor(kind, tmdbId, window))
     }
   }
-  await Promise.all(Array.from({ length: Math.min(LOOKUPS_IN_FLIGHT, queue.length) }, worker))
+  await Promise.all(Array.from({ length: Math.min(REQUESTS_IN_FLIGHT, queue.length) }, worker))
   return found
 }
 
@@ -269,22 +273,55 @@ function withImdbIds<T extends { tmdbId: number }>(
 
 // The key travels in the query string, so every error names the path alone.
 async function tmdbSearchGet(path: string, params: Record<string, string>, signal: AbortSignal): Promise<unknown> {
-  const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
-  let res: Response
+  if (!await takeTurn(signal)) throw new Error(`${path} timed out waiting for its turn`)
   try {
-    res = await fetch(`${config.tmdbBaseUrl}${path}?${query}`, { signal })
-  } catch {
-    throw new Error(signal.aborted ? `${path} timed out` : `${path} could not be reached`)
+    const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
+    let res: Response
+    try {
+      res = await fetch(`${config.tmdbBaseUrl}${path}?${query}`, { signal })
+    } catch {
+      throw new Error(signal.aborted ? `${path} timed out` : `${path} could not be reached`)
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {})
+      throw new Error(`${path} answered HTTP ${res.status}`)
+    }
+    try {
+      return await res.json()
+    } catch {
+      throw new Error(signal.aborted ? `${path} timed out` : `${path} answered something other than JSON`)
+    }
+  } finally {
+    endTurn()
   }
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {})
-    throw new Error(`${path} answered HTTP ${res.status}`)
+}
+
+// False when the signal gave up first. A request that gives up leaves the line,
+// so a search the user has typed past holds no place in it.
+function takeTurn(signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false)
+  if (requestsInFlight < REQUESTS_IN_FLIGHT) {
+    requestsInFlight++
+    return Promise.resolve(true)
   }
-  try {
-    return await res.json()
-  } catch {
-    throw new Error(signal.aborted ? `${path} timed out` : `${path} answered something other than JSON`)
-  }
+  return new Promise(resolve => {
+    const start = () => {
+      signal.removeEventListener('abort', leave)
+      requestsInFlight++
+      resolve(true)
+    }
+    const leave = () => {
+      waitingForTurn.splice(waitingForTurn.indexOf(start), 1)
+      resolve(false)
+    }
+    signal.addEventListener('abort', leave, { once: true })
+    waitingForTurn.push(start)
+  })
+}
+
+function endTurn(): void {
+  requestsInFlight--
+  waitingForTurn.shift()?.()
 }
 
 // Search runs on every keystroke, so an outage would otherwise log a line per key.
