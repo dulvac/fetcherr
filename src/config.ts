@@ -213,10 +213,10 @@ export type AudioLanguage =
 export type EnglishStreamMode = 'off' | 'prefer' | 'require'
 export type DirectPlaybackMode = 'off' | 'torrentsOnly' | 'all'
 export type StreamRankingMode = 'fetcherr' | 'provider'
-export type StremioSearchSource = 'cinemeta' | 'addon' | 'trakt'
+export type StremioSearchSource = 'cinemeta' | 'tmdb' | 'addon' | 'trakt'
 
 export function parseStremioSearchSource(value: string | undefined): StremioSearchSource {
-  if (value === 'addon' || value === 'trakt') return value
+  if (value === 'tmdb' || value === 'addon' || value === 'trakt') return value
   return 'cinemeta'
 }
 export type MediaSourceLimit = 5 | 10 | 20

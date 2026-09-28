@@ -29,6 +29,7 @@ import { config } from '../config.js'
 import { collectStreamProviderUrls, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, serializeFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseStremioSearchSource, parseSubtitleMaxPerLanguage, parseTraktLists, type ListPresentation } from '../config.js'
 import { parseSubtitleLanguages, subtitlePreferenceOptions } from '../subtitle-lang.js'
 import { clearSubtitleCache } from '../subtitles.js'
+import { clearTmdbSearchCache } from '../tmdb-search.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries } from '../mdblist.js'
@@ -845,6 +846,8 @@ export async function uiRoutes(app: FastifyInstance) {
       hasPremiumizeApiKey: !!getSetting('premiumizeApiKey'),
       torBoxCleanupEnabled: getSetting('torBoxCleanupMode') !== 'keep',
       hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
+      // A key from TMDB_API_KEY counts too. hasTmdbApiKey only knows about a stored one.
+      tmdbApiKeyConfigured: !!config.tmdbApiKey,
       hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
       hasTraktClientSecret: !!getSetting('traktClientSecret'),
       ldap: {
@@ -1021,6 +1024,9 @@ export async function uiRoutes(app: FastifyInstance) {
     // On every save, not only when a subtitle field changed: with no subtitle
     // providers named, the stream providers saved above are the subtitle source.
     clearSubtitleCache()
+    // Answers fetched under the old key are dropped, and a new key's first
+    // failure is logged at once rather than up to ten minutes later.
+    clearTmdbSearchCache()
     if (typeof body.preferredAudioLanguage === 'string') {
       const language = parseAudioLanguage(body.preferredAudioLanguage)
       setSetting('preferredAudioLanguage', language)
