@@ -61,6 +61,14 @@ export interface FakeTmdb {
   setRaw: (scope: 'movie' | 'tv', body: string | null) => void
   // Ids whose external_ids lookup answers HTTP 500.
   failLookups: Set<number>
+  // Ids whose external_ids lookup waits, unanswered, until release() lets it go.
+  holdLookups: Set<number>
+  // How many held lookups are waiting.
+  held: () => number
+  // Answers the oldest n held lookups, or all of them.
+  release: (n?: number) => void
+  // The most requests that were ever open at once.
+  maxInFlight: () => number
   close: () => Promise<void>
 }
 
@@ -77,7 +85,11 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
   const modes = new Map<string, FakeTmdbMode>()
   const raw = new Map<string, string>()
   const failLookups = new Set<number>()
+  const holdLookups = new Set<number>()
+  const heldAnswers: Array<() => void> = []
   const requests: FakeTmdbRequest[] = []
+  let inFlight = 0
+  let maxInFlight = 0
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const later = (ms: number, fn: () => void) => {
     const timer = setTimeout(() => {
@@ -164,6 +176,10 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     url.searchParams.delete('api_key')
     const query = Object.fromEntries(url.searchParams)
     requests.push({ scope, path: url.pathname, query })
+    inFlight++
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    // Fires once the answer is sent, or when the client gives up first.
+    res.on('close', () => { inFlight-- })
     const send = ([status, body]: [number, string]) => {
       // The client may have given up and closed the socket already.
       if (res.destroyed || res.writableEnded) return
@@ -173,7 +189,9 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     if (scope === 'unknown') return send([404, NOT_FOUND])
     if (key !== FAKE_TMDB_KEY) return send([401, INVALID_KEY])
     const mode = modes.get(`${scope}:${query.page ?? ''}`) ?? modes.get(scope) ?? 'answers'
-    if (mode === 'slow') later(options.slowMs ?? 5000, () => send(answer(scope, url.pathname, query, 'answers')))
+    const held = (scope === 'movie-ids' || scope === 'tv-ids') && holdLookups.has(Number(url.pathname.split('/')[2]))
+    if (held) heldAnswers.push(() => send(answer(scope, url.pathname, query, mode)))
+    else if (mode === 'slow') later(options.slowMs ?? 5000, () => send(answer(scope, url.pathname, query, 'answers')))
     else send(answer(scope, url.pathname, query, mode))
   })
 
@@ -186,6 +204,10 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     setMode: (scope, mode, page) => { modes.set(page === undefined ? scope : `${scope}:${page}`, mode) },
     setRaw: (scope, body) => { if (body === null) raw.delete(scope); else raw.set(scope, body) },
     failLookups,
+    holdLookups,
+    held: () => heldAnswers.length,
+    release: n => { for (const answerHeld of heldAnswers.splice(0, n ?? heldAnswers.length)) answerHeld() },
+    maxInFlight: () => maxInFlight,
     close: () => new Promise<void>(resolve => {
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
