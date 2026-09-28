@@ -85,6 +85,44 @@ test('each track carries the release it was made for', async t => {
   ])
 })
 
+test('the release name is also read from title, releaseName and fileName', async t => {
+  const provider = await startFakeSubtitleProvider({
+    subtitles: [
+      { id: 'v3+|5467612|x', sub_id: 5467612, lang: 'eng', title: 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV', url: 'https://subs.example/sub.vtt/?lang_code=en&sub_id=5467612' },
+      { id: 'a', lang: 'eng', url: 'https://subs.example/file/a', releaseName: 'Show.S01E01.WEBRip-GRP', fileName: 'Show.S01E01.WEBRip-GRP.srt' },
+      { id: 'b', lang: 'eng', url: 'https://subs.example/file/b', fileName: 'Show.S01E01.1080p.WEB-DL-GRP.srt' },
+      { id: 'c', lang: 'eng', url: 'https://subs.example/file/c', movieReleaseName: 'Movie.From.OpenSubtitles.v3', title: 'Wrong.Title', releaseName: 'Wrong.ReleaseName' },
+      { id: 'd', lang: 'eng', url: 'https://subs.example/file/d', title: 42, releaseName: '  ' },
+    ],
+  })
+  t.after(() => provider.close())
+  configure({ subtitleProviderUrls: [provider.url] })
+
+  const tracks = await fetchSubtitles('movie', 'tt0111161')
+  assert.deepEqual(tracks.map(track => [track.id, track.release, track.format]), [
+    ['1-v3+|5467612|x', 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV', 'vtt'],
+    ['1-a', 'Show.S01E01.WEBRip-GRP', 'srt'],
+    ['1-b', 'Show.S01E01.1080p.WEB-DL-GRP', 'srt'],
+    ['1-c', 'Movie.From.OpenSubtitles.v3', 'srt'],
+    ['1-d', '', 'srt'],
+  ])
+})
+
+test('the format also comes from a .vtt path segment, and from fileName when subtitleFileName is missing', async t => {
+  const provider = await startFakeSubtitleProvider({
+    subtitles: [
+      { id: 'a', lang: 'eng', url: 'https://subs.example/files/sub.VTT/?id=1' },
+      { id: 'b', lang: 'eng', url: 'https://subs.example/download/abc' },
+      { id: 'c', lang: 'eng', url: 'https://subs.example/sub.vtt/?id=2', subtitleFileName: 'x.ass' },
+      { id: 'd', lang: 'eng', url: 'https://subs.example/file/d', fileName: 'x.ass' },
+    ],
+  })
+  t.after(() => provider.close())
+  configure({ subtitleProviderUrls: [provider.url] })
+
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.format), ['vtt', 'srt', 'ass', 'ass'])
+})
+
 test('the same file offered by two providers is offered once', async t => {
   const shared = { id: 'x', lang: 'eng', url: 'https://subs.example/file/shared' }
   const first = await startFakeSubtitleProvider({ subtitles: [shared] })
