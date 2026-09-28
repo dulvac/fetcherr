@@ -1,6 +1,6 @@
 import type { StremioMediaType } from './sootio.js'
 import { subtitleLanguageName } from './subtitle-lang.js'
-import { releaseLabel } from './subtitle-rank.js'
+import { rankForFile, releaseLabel } from './subtitle-rank.js'
 import type { SubtitleTrack } from './subtitles.js'
 
 export interface SubtitleLookupKey {
@@ -54,23 +54,35 @@ export function displayLabel(tracks: ReadonlyArray<Pick<SubtitleTrack, 'lang' | 
   return release ? `${base} · ${release}` : base
 }
 
+export interface SubtitleStreamOptions {
+  // How many tracks each version shows per language.
+  perLanguage: number
+  // The file a version plays, when it is known, so the tracks made for that
+  // release can be listed first.
+  fileNameFor?: (source: Record<string, unknown>) => string | null
+}
+
 // One external subtitle stream per track, after whatever streams the source
-// already lists. The first track in the preferred language becomes the default
-// only when there is one; otherwise nothing is forced and the field is left out.
+// already lists, best match for the source's file first within each language.
+// The first track in the preferred language becomes the default only when there
+// is one; otherwise nothing is forced and the field is left out.
 export function attachSubtitleStreams(
   sources: Array<Record<string, unknown>>,
   tracks: SubtitleTrack[],
   preferredLanguage: string,
   itemId: string,
+  options: SubtitleStreamOptions,
 ): Array<Record<string, unknown>> {
   if (!tracks.length) return sources
-  const defaultAt = preferredLanguage ? tracks.findIndex(track => track.lang === preferredLanguage) : -1
   return sources.map(source => {
+    const ordered = rankForFile(tracks, options.fileNameFor?.(source) ?? null, options.perLanguage)
+    const defaultAt = preferredLanguage ? ordered.findIndex(track => track.lang === preferredLanguage) : -1
     const existing = Array.isArray(source.MediaStreams) ? source.MediaStreams as unknown[] : []
     const first = existing.length
     const sourceId = String(source.Id ?? '')
-    const subtitleStreams = tracks.map((track, i) => {
-      const label = displayLabel(tracks, i, subtitleLanguageName(track.lang))
+    rememberSubtitleOrder(sourceId, ordered.map(track => track.id))
+    const subtitleStreams = ordered.map((track, i) => {
+      const label = displayLabel(ordered, i, subtitleLanguageName(track.lang))
       return {
         Type: 'Subtitle',
         Index: first + i,
@@ -113,8 +125,58 @@ export function attachSubtitleStreams(
 // /Videos/.../Subtitles/{index} is asking for that position in the same list.
 export const FIRST_SUBTITLE_STREAM_INDEX = 2
 
-export function subtitleTrackAtIndex(tracks: SubtitleTrack[], streamIndex: number): SubtitleTrack | null {
-  return tracks[streamIndex - FIRST_SUBTITLE_STREAM_INDEX] ?? null
+// The order each version listed its tracks in, by media source id. A player
+// fetches a subtitle by its index in that list, possibly hours into a film and
+// long after the version's file name is forgotten, so the list itself is kept.
+const ORDER_TTL_MS = 6 * 60 * 60 * 1000
+const ORDER_MAX = 5000
+const subtitleOrders = new Map<string, { trackIds: string[]; expiresAt: number }>()
+
+export function rememberSubtitleOrder(sourceId: string, trackIds: string[]): void {
+  if (!sourceId) return
+  const now = Date.now()
+  // Re-set rather than updated, so the map stays in the order entries were last
+  // written, which is also the order they expire in.
+  subtitleOrders.delete(sourceId)
+  for (const [key, entry] of subtitleOrders) {
+    if (entry.expiresAt > now) break
+    subtitleOrders.delete(key)
+  }
+  while (subtitleOrders.size >= ORDER_MAX) {
+    const oldest = subtitleOrders.keys().next().value
+    if (oldest === undefined) break
+    subtitleOrders.delete(oldest)
+  }
+  subtitleOrders.set(sourceId, { trackIds: [...trackIds], expiresAt: now + ORDER_TTL_MS })
+}
+
+export function rememberedSubtitleOrder(sourceId: string): string[] | null {
+  const entry = subtitleOrders.get(sourceId)
+  if (!entry) return null
+  if (entry.expiresAt <= Date.now()) {
+    subtitleOrders.delete(sourceId)
+    return null
+  }
+  return [...entry.trackIds]
+}
+
+// The track a version listed at streamIndex. With nothing remembered, as after a
+// restart, the order is worked out again from the version's file, or is the
+// provider's when the file is unknown. A remembered track the provider no longer
+// offers is null rather than whichever track now sits there.
+export function subtitleTrackForSource(
+  tracks: SubtitleTrack[],
+  sourceId: string,
+  streamIndex: number,
+  fallback: { perLanguage: number; fileName: string | null },
+): SubtitleTrack | null {
+  const remembered = rememberedSubtitleOrder(sourceId)
+  const byId = new Map(tracks.map(track => [track.id, track]))
+  const ordered = remembered
+    ? remembered.map(id => byId.get(id) ?? null)
+    : rankForFile(tracks, fallback.fileName, fallback.perLanguage)
+  const position = streamIndex - FIRST_SUBTITLE_STREAM_INDEX
+  return position >= 0 ? ordered[position] ?? null : null
 }
 
 const SUBTITLE_CONTENT_TYPES: Record<string, string> = {

@@ -45,16 +45,21 @@ test('languages are folded, filtered to the configured list and grouped in its o
   assert.deepEqual(provider.requests, ['/subtitles/movie/tt0111161.json'])
 })
 
-test('each language is capped, in provider order and then the provider\'s own order', async t => {
+test('each language keeps a pool of ten, in provider order and then the provider\'s own order', async t => {
   const first = await startFakeSubtitleProvider({ subtitles: [sub('a1', 'eng'), sub('a2', 'eng')] })
   const second = await startFakeSubtitleProvider({ subtitles: [sub('b1', 'eng'), sub('b2', 'fre')] })
-  t.after(() => Promise.all([first.close(), second.close()]))
+  const many = await startFakeSubtitleProvider({ subtitles: Array.from({ length: 12 }, (_, i) => sub(`m${i + 1}`, 'eng')) })
+  t.after(() => Promise.all([first.close(), second.close(), many.close()]))
 
+  // How many each version shows is decided per version, later, so the setting
+  // no longer cuts here.
   configure({ subtitleProviderUrls: [first.url, second.url], subtitleMaxPerLanguage: 2 })
-  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a1', '1-a2', '2-b2'])
-
-  configure({ subtitleProviderUrls: [first.url, second.url], subtitleMaxPerLanguage: 3 })
   assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-a1', '1-a2', '2-b1', '2-b2'])
+
+  configure({ subtitleProviderUrls: [many.url] })
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), [
+    '1-m1', '1-m2', '1-m3', '1-m4', '1-m5', '1-m6', '1-m7', '1-m8', '1-m9', '1-m10',
+  ])
 })
 
 test('each track carries the release it was made for', async t => {
@@ -68,7 +73,7 @@ test('each track carries the release it was made for', async t => {
     ],
   })
   t.after(() => provider.close())
-  configure({ subtitleProviderUrls: [provider.url], subtitleMaxPerLanguage: 10 })
+  configure({ subtitleProviderUrls: [provider.url] })
 
   const tracks = await fetchSubtitles('movie', 'tt0111161')
   assert.deepEqual(tracks.map(track => [track.id, track.release, track.label]), [
@@ -309,17 +314,19 @@ test('no providers at all means no subtitles', async () => {
   assert.deepEqual(await fetchSubtitles('movie', 'tt0111161'), [])
 })
 
-test('.sub files are not offered and do not use up the cap', async t => {
+test('.sub files are not offered and do not use up the pool', async t => {
   const provider = await startFakeSubtitleProvider({
     subtitles: [
-      { id: 'micro', lang: 'eng', url: 'https://subs.example/file/1', subtitleFileName: 'Movie.sub' },
-      { id: 'srt', lang: 'eng', url: 'https://subs.example/file/2', subtitleFileName: 'Movie.srt' },
+      { id: 'micro', lang: 'eng', url: 'https://subs.example/file/micro', subtitleFileName: 'Movie.sub' },
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `srt${i + 1}`, lang: 'eng', url: `https://subs.example/file/${i + 1}`, subtitleFileName: 'Movie.srt' })),
     ],
   })
   t.after(() => provider.close())
-  configure({ subtitleProviderUrls: [provider.url], subtitleMaxPerLanguage: 1 })
+  configure({ subtitleProviderUrls: [provider.url] })
 
-  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), ['1-srt'])
+  assert.deepEqual((await fetchSubtitles('movie', 'tt0111161')).map(track => track.id), [
+    '1-srt1', '1-srt2', '1-srt3', '1-srt4', '1-srt5', '1-srt6', '1-srt7', '1-srt8', '1-srt9', '1-srt10',
+  ])
 })
 
 async function startFileHost() {

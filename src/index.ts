@@ -1227,6 +1227,16 @@ function validatePlaybackCandidate(token: string, itemId: string): boolean {
   return playbackCandidates.get(token)?.itemId === itemId
 }
 
+// A version built from a remembered candidate knows which file it plays, which is
+// what subtitle ranking compares release names against.
+function fileNameForMediaSource(mediaSourceId: string): string | null {
+  const token = mediaSourceId.match(/:candidate:([0-9a-f]{32})$/i)?.[1]
+  const stream = token ? playbackCandidates.get(token)?.stream : undefined
+  if (!stream) return null
+  const hinted = stream.behaviorHints?.filename
+  return typeof hinted === 'string' && hinted ? hinted : `${stream.title ?? ''} ${stream.name ?? ''}`.trim() || null
+}
+
 function getPlaybackCandidate(token: string | undefined, playPath: string) {
   cleanupPlaybackPrewarmCache()
   if (!token) return null
@@ -1999,9 +2009,9 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
 // PlaybackInfo for search results too.
 const lookupSubtitles = (mediaType: StremioMediaType, externalId: string) => fetchSubtitles(mediaType, externalId)
 
-await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile })
-await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile })
-await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile })
+await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile, fileNameForMediaSource })
+await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile, fileNameForMediaSource })
+await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources, lookupSubtitles, fetchSubtitleFile, fileNameForMediaSource })
 await app.register(uiRoutes)
 // One surface, one prefix: no /emby-style alias registration for the addon. The
 // plugin derives its own route paths and its token redaction from app.prefix, so

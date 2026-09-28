@@ -273,3 +273,50 @@ test('a subtitle fetch the server cannot place, cannot get, or the account may n
   assert.equal((await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/someone-else/Subtitles/2/0/Stream.srt`, headers: { 'x-emby-token': tokens.admin } })).statusCode, 200)
   await app.close()
 })
+
+test('each version lists the track made for its own file first, and serves it at that index', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const before = config.mediaSourceSelection
+  config.mediaSourceSelection = true
+  t.after(() => { config.mediaSourceSelection = before })
+
+  const bluray = `${MOVIE_ITEM}:candidate:${'b'.repeat(32)}`
+  const web = `${MOVIE_ITEM}:candidate:${'c'.repeat(32)}`
+  // Known by its file but never listed, as for a player that skips PlaybackInfo.
+  const unlisted = `${MOVIE_ITEM}:candidate:${'d'.repeat(32)}`
+  const tracks: SubtitleTrack[] = [
+    { id: '1-dvd', url: `${host.base}/dvd.srt`, lang: 'eng', label: 'English 1', format: 'srt', release: 'The.Shawshank.Redemption.1994.DVDRip.XviD-ABC' },
+    { id: '1-web', url: `${host.base}/web.srt`, lang: 'eng', label: 'English 2', format: 'srt', release: 'The.Shawshank.Redemption.1994.720p.WEB-DL.H264-myTV' },
+    { id: '1-fgt', url: `${host.base}/fgt.srt`, lang: 'eng', label: 'English 3', format: 'srt', release: 'The.Shawshank.Redemption.1994.1080p.BluRay.x264-FGT' },
+  ]
+  const fileNames = new Map([
+    [bluray, 'The.Shawshank.Redemption.1994.1080p.BluRay.x264.DTS-FGT.mkv'],
+    [web, 'The.Shawshank.Redemption.1994.720p.WEB-DL.DD5.1.H264-myTV.mkv'],
+    [unlisted, 'The.Shawshank.Redemption.1994.1080p.BDRip.x264-FGT.mkv'],
+  ])
+  let candidatesKnown = true
+  const fileNameForMediaSource = (id: string) => candidatesKnown ? fileNames.get(id) ?? null : null
+  const versions = async () => [bluray, web].map(Id => ({ Id, MediaStreams: [{ Type: 'Video', Index: 0 }, { Type: 'Audio', Index: 1 }] }))
+  const app = Fastify(PRODUCTION_ROUTER_OPTIONS as never)
+  await app.register(jellyfinRoutes, { lookupSubtitles: async () => tracks, fetchSubtitleFile, buildPlaybackMediaSources: versions, fileNameForMediaSource } as never)
+  t.after(() => app.close())
+
+  const info = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+  assert.equal(info.statusCode, 200, info.body)
+  const listedFirst = (info.json().MediaSources as Array<Record<string, unknown>>).map(source =>
+    [source.Id, (source.MediaStreams as Array<Record<string, unknown>>).find(stream => stream.Index === 2)?.DisplayTitle])
+  assert.deepEqual(listedFirst, [[bluray, 'English 1 · 1080p BluRay FGT'], [web, 'English 1 · 720p WEB-DL myTV']])
+
+  const unlistedFetch = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${unlisted}/Subtitles/2/0/Stream.srt` })
+  assert.match(unlistedFetch.body, /file \/fgt\.srt/)
+
+  // Candidates are forgotten after ten minutes, and a player may fetch its
+  // subtitles later than that. The order it was shown must still hold.
+  candidatesKnown = false
+  for (const [id, file] of [[bluray, 'fgt.srt'], [web, 'web.srt']]) {
+    const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${id}/Subtitles/2/0/Stream.srt` })
+    assert.equal(res.statusCode, 200, id)
+    assert.match(res.body, new RegExp(`file /${file.replace('.', '\\.')}`), id)
+  }
+})

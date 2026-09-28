@@ -109,6 +109,34 @@ test('each label names the release its file was made for, as on Jellyfin', async
   ])
 })
 
+test('a client that names its file gets the track made for that release first', async () => {
+  const filename = 'Monk.S01E01.Mr.Monk.and.the.Candidate.720p.WEB-DL.H264.AAC20-myTV.mkv'
+  const segment = `filename=${encodeURIComponent(filename)}.json`
+  const res = await get(`/stremio/${friend.token}/subtitles/movie/tt0111161/${segment}`, async () => RELEASED)
+  assert.deepEqual(labels(res), [
+    ['1-b', 'English 1 · 720p WEB-DL myTV'],
+    ['1-a', 'English 2 · DVDRip'],
+    ['1-c', 'Romanian'],
+  ])
+  // The preference moves a language forward without renumbering it.
+  const preferred = await get(`/stremio/${mum.token}/subtitles/movie/tt0111161/${segment}`, async () => RELEASED)
+  assert.deepEqual(labels(preferred), [
+    ['1-c', 'Romanian'],
+    ['1-b', 'English 1 · 720p WEB-DL myTV'],
+    ['1-a', 'English 2 · DVDRip'],
+  ])
+})
+
+test('each language shows only the configured few', async t => {
+  const before = config.subtitleMaxPerLanguage
+  config.subtitleMaxPerLanguage = 2
+  t.after(() => { config.subtitleMaxPerLanguage = before })
+  const res = await get(`/stremio/${friend.token}/subtitles/movie/tt0111161.json`, async () => [
+    ...RELEASED, { ...TRACKS[0], id: '1-d' }, { ...TRACKS[0], id: '1-e', lang: 'rum' },
+  ])
+  assert.deepEqual(res.json().subtitles.map((entry: { id: string }) => entry.id), ['1-a', '1-b', '1-c', '1-e'])
+})
+
 test('a bad token and a revoked account are indistinguishable', async () => {
   calls.length = 0
   const bad = await get('/stremio/nonsense/subtitles/movie/tt0111161.json')
