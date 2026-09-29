@@ -2244,7 +2244,7 @@ async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limite
         // A check that got no turn, or timed out, is empty the same way.
         if (!canUserAccessMovie(user, movie)) return null
       }
-      return searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)
+      return searchMovieAutoplayItem(movieToSearchItem(movie, user.id) as Record<string, unknown>)
     }
     const meta = tmdbSeriesToMeta(candidate.series)
     const allowed = limited
@@ -2356,7 +2356,7 @@ async function buildSearchResultItems(
     ...localShows.map(show => showToSeriesItem(show, user.id)),
     // With the name TMDB matched them by, so they rank by it too.
     ...filterMoviesForUser(user, tmdbLibraryMovies).map(movie => withOriginalTitle(
-      searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>),
+      searchMovieAutoplayItem(movieToSearchItem(movie, user.id) as Record<string, unknown>),
       tmdbHits?.movies?.find(hit => hit.tmdbId === movie.tmdbId)?.originalTitle,
     )),
     ...filterShowsForUser(user, tmdbLibraryShows).map(show => withOriginalTitle(
