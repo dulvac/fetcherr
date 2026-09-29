@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { config } from '../src/config.js'
-import { clearSubtitleCache, fetchSubtitleFile, fetchSubtitles } from '../src/subtitles.js'
+import { clearSubtitleCache, fetchSubtitleFile, fetchSubtitles, prefetchSubtitleFiles } from '../src/subtitles.js'
 import { startFakeSubtitleProvider } from './fake-subtitle-provider.js'
 
 const sub = (id: string, lang: string) => ({ id, lang, url: `https://subs.example/file/${id}` })
@@ -516,3 +516,59 @@ test('a subtitle file that fails, hangs or is too large is null, not an error', 
   assert.equal(await fetchSubtitleFile(`${host.base}/huge.srt`), null)
   assert.equal(await fetchSubtitleFile('not a url'), null)
 })
+
+test('two concurrent fetches for the same URL share one request', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  configure()
+  const [first, second] = await Promise.all([fetchSubtitleFile(`${host.base}/a.srt`), fetchSubtitleFile(`${host.base}/a.srt`)])
+  assert.equal(second, first)
+  assert.deepEqual(host.hits, ['/a.srt'])
+})
+
+test('a failed fetch is not cached, so the next call reaches the host again', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  configure()
+  assert.equal(await fetchSubtitleFile(`${host.base}/fail.srt`), null)
+  assert.equal(await fetchSubtitleFile(`${host.base}/fail.srt`), null)
+  assert.deepEqual(host.hits, ['/fail.srt', '/fail.srt'])
+})
+
+test('prefetchSubtitleFiles never has more than four requests open at once', async t => {
+  let open = 0
+  let maxOpen = 0
+  const server = createServer((req, res) => {
+    open++
+    maxOpen = Math.max(maxOpen, open)
+    setTimeout(() => {
+      open--
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('ok')
+    }, 30)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
+  configure()
+
+  const urls = Array.from({ length: 6 }, (_, i) => `http://127.0.0.1:${port}/${i}.srt`)
+  prefetchSubtitleFiles(urls)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(maxOpen, 4)
+})
+
+test('prefetchSubtitleFiles does not throw and does not let a failing url stop the others', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  configure()
+  assert.doesNotThrow(() => prefetchSubtitleFiles([`${host.base}/fail.srt`, `${host.base}/a.srt`, `${host.base}/b.srt`]))
+  await new Promise(resolve => setTimeout(resolve, 200))
+  assert.deepEqual([...host.hits].sort(), ['/a.srt', '/b.srt', '/fail.srt'])
+})
+
+test('prefetchSubtitleFiles is a no-op for an empty list', async () => {
+  configure()
+  assert.doesNotThrow(() => prefetchSubtitleFiles([]))
+})
+
