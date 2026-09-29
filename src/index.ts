@@ -24,7 +24,7 @@ import {
   torBoxRequestdlTorrentId,
 } from './torbox.js'
 import { resolveStream as pmResolveStream } from './premiumize.js'
-import { warmTorBoxLink } from './torbox-link.js'
+import { shouldWarmTorBoxLink, warmTorBoxLink } from './torbox-link.js'
 import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
@@ -404,6 +404,12 @@ function prewarmPlayback(playPath: string, label: string): void {
   promise
     .then(resolved => {
       app.log.info(`prewarm: ready for ${label}${resolved.filename ? ` → ${resolved.filename}` : ''}`)
+      // Start the warm now instead of waiting for /play: it then overlaps the
+      // requestdl redirect and the CDN's first-byte probe with the player still
+      // loading subtitles, rather than adding that wait to /play's own latency.
+      // warmTorBoxLink caches the result (and joins an in-flight warm if /play
+      // gets there first), so this never does the work twice.
+      if (shouldWarmTorBoxLink(resolved.url, config.streamRelayPrefixes)) warmTorBoxLink(resolved.url)
     })
     .catch(err => app.log.info(`prewarm: ended for ${label}: ${err}`))
     .finally(() => {

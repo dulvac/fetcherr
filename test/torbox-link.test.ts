@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { warmTorBoxLink, type WarmTorBoxLinkOptions } from '../src/torbox-link.js'
+import { shouldWarmTorBoxLink, warmTorBoxLink, type WarmTorBoxLinkOptions } from '../src/torbox-link.js'
 
 // Each test uses its own requestdl URL (a fresh token per test) so the module's
 // module-level cache and in-flight map never leak a result from one test into
@@ -59,6 +59,29 @@ function slowFetch(script: Record<string, SlowAnswer[]>) {
   }) as unknown as typeof fetch
   return { fetchImpl, countOf: (url: string) => counts.get(url) ?? 0 }
 }
+
+// prewarmPlayback decides whether to start a warm from this alone (no route,
+// no fastify app), so it is the seam that stands in for the /play route test
+// the brief asks for when one exists cheaply.
+test('shouldWarmTorBoxLink is true for a requestdl URL that is not relayed', () => {
+  assert.equal(shouldWarmTorBoxLink(requestdl(), ['http://aiostreams:3000/']), true)
+})
+
+test('shouldWarmTorBoxLink is false for a requestdl URL that is also relayed', () => {
+  // A URL that would pass the TorBox requestdl check on its own; only the
+  // relay prefix (matching this same host) should flip the answer to false.
+  const url = requestdl()
+  assert.equal(shouldWarmTorBoxLink(url, ['https://api.torbox.app/']), false)
+})
+
+test('shouldWarmTorBoxLink is false for a relayed usenet URL that is not TorBox at all', () => {
+  const relayedUsenet = 'http://aiostreams:3000/usenet/stream/abc123'
+  assert.equal(shouldWarmTorBoxLink(relayedUsenet, ['http://aiostreams:3000/']), false)
+})
+
+test('shouldWarmTorBoxLink is false for a non-TorBox URL with no relay prefixes configured', () => {
+  assert.equal(shouldWarmTorBoxLink('https://example.com/stream.mkv', []), false)
+})
 
 test('a 400 twice then 206 warms the link and returns the CDN URL after three probes', async () => {
   const requestdlUrl = requestdl()

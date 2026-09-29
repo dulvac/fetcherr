@@ -1,4 +1,6 @@
 import { trimCacheMap } from './cache-utils.js'
+import { torBoxRequestdlTorrentId } from './torbox.js'
+import { isRelayedUrl } from './stream-relay.js'
 
 // TorBox's requestdl endpoint redirects to a CDN URL whose presigned token the
 // CDN node needs about a second to learn. A player that hits the CDN URL in
@@ -70,6 +72,13 @@ function warnRequestdlFailure(requestdlUrl: string, now: () => number): void {
   if (at - lastRequestdlWarnAt < REQUESTDL_WARN_THROTTLE_MS) return
   lastRequestdlWarnAt = at
   console.warn(`play: TorBox requestdl did not redirect, playing without a warm link (${hostAndPath(requestdlUrl)})`)
+}
+
+// The only plays worth warming: a TorBox requestdl URL fetcherr will hand to
+// the player unmodified. A relayed URL (aiostreams' usenet engine) never goes
+// near TorBox's CDN, so warming it would just be a wasted request.
+export function shouldWarmTorBoxLink(url: string, relayPrefixes: readonly string[]): boolean {
+  return !isRelayedUrl(url, relayPrefixes) && torBoxRequestdlTorrentId(url) !== null
 }
 
 export async function warmTorBoxLink(requestdlUrl: string, options: WarmTorBoxLinkOptions = {}): Promise<string> {
