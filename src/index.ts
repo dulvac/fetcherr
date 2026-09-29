@@ -24,6 +24,7 @@ import {
   torBoxRequestdlTorrentId,
 } from './torbox.js'
 import { resolveStream as pmResolveStream } from './premiumize.js'
+import { warmTorBoxLink } from './torbox-link.js'
 import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
@@ -1918,8 +1919,15 @@ function relayRememberedPlay(req: FastifyRequest, reply: FastifyReply, key: stri
   return relayStream(req, reply, [url], relayOptions(key, playPath, label))
 }
 
-function sendPlayback(req: FastifyRequest, reply: FastifyReply, key: string, playPath: string, label: string, resolved: PlayResolution) {
-  if (!isRelayedUrl(resolved.url, config.streamRelayPrefixes)) return reply.redirect(resolved.url, 302)
+async function sendPlayback(req: FastifyRequest, reply: FastifyReply, key: string, playPath: string, label: string, resolved: PlayResolution): Promise<FastifyReply> {
+  if (!isRelayedUrl(resolved.url, config.streamRelayPrefixes)) {
+    // TorBox's CDN needs a moment to learn a freshly issued presigned token, so
+    // warm the link ourselves rather than hand the player a URL that 400s. The
+    // requestdl URL itself is untouched: cleanup tracking, rememberTorBoxPlaybackUrl
+    // and the resolution caches all still key off resolved.url.
+    const url = torBoxRequestdlTorrentId(resolved.url) !== null ? await warmTorBoxLink(resolved.url) : resolved.url
+    return reply.redirect(url, 302)
+  }
   const client = playbackClientName(playPath)
     || playbackClientFromHeaders(req.headers as Record<string, string | undefined>)
     || 'unknown client'
