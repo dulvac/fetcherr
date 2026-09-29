@@ -326,15 +326,32 @@ const FILE_CACHE_MAX = 200
 const FILE_MAX_BYTES = 5 * 1024 * 1024
 const fileCache = new Map<string, { file: SubtitleFile; expiresAt: number }>()
 
+// A URL already being fetched, so a second caller awaits that fetch instead of
+// starting another. Infuse's own request and this file's prefetch often race
+// for the same URL, and the provider should see one of them, not two.
+const inFlightFileFetches = new Map<string, Promise<SubtitleFile | null>>()
+
 // Jellyfin players fetch subtitles from their own server and follow neither an
 // absolute DeliveryUrl nor a redirect, so the file comes through here. Kept
 // briefly, because a player fetches every track at play start and again on each
 // replay. Never rejects: a file that cannot be had is null, and the player
 // simply lacks that track.
 export async function fetchSubtitleFile(url: string): Promise<SubtitleFile | null> {
-  const now = Date.now()
   const cached = fileCache.get(url)
-  if (cached && cached.expiresAt > now) return cached.file
+  if (cached && cached.expiresAt > Date.now()) return cached.file
+  const inFlight = inFlightFileFetches.get(url)
+  if (inFlight) return inFlight
+  const promise = fetchSubtitleFileUncached(url)
+  inFlightFileFetches.set(url, promise)
+  try {
+    return await promise
+  } finally {
+    inFlightFileFetches.delete(url)
+  }
+}
+
+async function fetchSubtitleFileUncached(url: string): Promise<SubtitleFile | null> {
+  const now = Date.now()
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(config.subtitleTimeoutMs) })
     if (!res.ok) return null
@@ -356,4 +373,26 @@ export async function fetchSubtitleFile(url: string): Promise<SubtitleFile | nul
   } catch {
     return null
   }
+}
+
+// At most this many of prefetchSubtitleFiles' urls are ever in flight together,
+// so a title with many tracks does not open a burst of connections to a
+// provider that counts them, or to one that throttles by IP.
+const PREFETCH_CONCURRENCY = 4
+
+// Starts fetching every url a play is about to ask for anyway, so the player's
+// own requests land on fetchSubtitleFile's cache or its in-flight fetch instead
+// of starting a fresh one. Fire-and-forget: it never throws or rejects, and a
+// caller that does not await it still gets the overlap this exists for.
+export function prefetchSubtitleFiles(urls: string[]): void {
+  const distinct = [...new Set(urls)]
+  if (!distinct.length) return
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < distinct.length) {
+      const url = distinct[next++]
+      await fetchSubtitleFile(url)
+    }
+  }
+  for (let i = 0; i < Math.min(PREFETCH_CONCURRENCY, distinct.length); i++) worker().catch(() => {})
 }

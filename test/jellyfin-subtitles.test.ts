@@ -244,6 +244,35 @@ test('a client fetching a subtitle at its DeliveryUrl gets the file from this se
   await app.close()
 })
 
+test('a PlaybackInfo for a title with tracks starts fetching the files the default version lists', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const app = await appServingFiles(host.base)
+  t.after(() => app.close())
+
+  const info = await app.inject({ method: 'GET', url: `/Items/${MOVIE_ITEM}/PlaybackInfo`, headers: { 'x-emby-token': tokens.admin } })
+  assert.equal(info.statusCode, 200, info.body)
+  // The prefetch runs in the background, without PlaybackInfo waiting on it.
+  await new Promise(resolve => setTimeout(resolve, 200))
+  assert.deepEqual([...host.hits].sort(), ['/a.srt', '/b.srt', '/c.vtt', '/fail.srt'])
+
+  const res = await app.inject({ method: 'GET', url: `/Videos/${MOVIE_ITEM}/${MOVIE_ITEM}/Subtitles/2/0/Stream.srt` })
+  assert.equal(res.statusCode, 200)
+  assert.equal(host.hits.filter(hit => hit === '/a.srt').length, 1)
+})
+
+test('the item detail screen prefetches nothing', async t => {
+  const host = await startFileHost()
+  t.after(() => host.close())
+  const app = await appServingFiles(host.base)
+  t.after(() => app.close())
+
+  const res = await app.inject({ method: 'GET', url: `/Users/${admin.id}/Items/${MOVIE_ITEM}`, headers: { 'x-emby-token': tokens.admin } })
+  assert.equal(res.statusCode, 200, res.body)
+  await new Promise(resolve => setTimeout(resolve, 200))
+  assert.deepEqual(host.hits, [])
+})
+
 test('a provider file in the OpenSubtitles v3+ shape is served without its banner', async t => {
   // The episode item, not the movie item every other test in this file shares:
   // the route remembers each source's subtitle order under its item id, and a
