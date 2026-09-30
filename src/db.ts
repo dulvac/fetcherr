@@ -740,11 +740,14 @@ function migrateLegacyUserData(db: Database.Database): void {
   if (migratedCount.n > 0) return
   const hasAdmin = db.prepare(`SELECT 1 FROM app_users WHERE id = ? LIMIT 1`).get(DEFAULT_ADMIN_USER_ID)
   if (!hasAdmin) return
+  // Floored the same as saveProgress: a restored pre-multi-user database can
+  // hold positions below MIN_RESUME_TICKS that a much older build wrote before
+  // that floor existed, and those were never an early-stop save on purpose.
   db.prepare(`
     INSERT INTO user_item_data (user_id, item_id, played, play_count, position_ticks, last_played_date)
-    SELECT ?, item_id, played, play_count, position_ticks, last_played_date
+    SELECT ?, item_id, played, play_count, CASE WHEN position_ticks < ? THEN 0 ELSE position_ticks END, last_played_date
     FROM user_data
-  `).run(DEFAULT_ADMIN_USER_ID)
+  `).run(DEFAULT_ADMIN_USER_ID, MIN_RESUME_TICKS)
 }
 
 function sqlStringLiteral(value: string): string {
