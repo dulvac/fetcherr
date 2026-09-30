@@ -2486,7 +2486,7 @@ export interface UserData {
   lastPlayedDate:  string
 }
 
-const MIN_RESUME_TICKS = 2 * 60 * 10_000_000
+export const MIN_RESUME_TICKS = 2 * 60 * 10_000_000
 
 export function getUserData(itemId: string, userId = DEFAULT_ADMIN_USER_ID): UserData {
   const r = getDb().prepare(`SELECT * FROM user_item_data WHERE user_id = ? AND item_id = ?`).get(userId, itemId) as Record<string, unknown> | undefined
