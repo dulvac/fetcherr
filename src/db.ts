@@ -2488,6 +2488,14 @@ export interface UserData {
 
 export const MIN_RESUME_TICKS = 2 * 60 * 10_000_000
 
+// A play that ran and then stopped between this floor and MIN_RESUME_TICKS
+// stopped early on purpose (jellyfin/index.ts's Stopped handler saves that
+// exact position via saveRestartPosition below, bypassing saveProgress's own
+// keep-the-old rule) rather than a barely-started scrub. saveProgress itself
+// never leaves a stored position in this band, so it's safe to surface it
+// here and in listResumeItemIds instead of treating it the same as 0.
+export const EARLY_STOP_FLOOR_TICKS = 5 * 10_000_000
+
 export function getUserData(itemId: string, userId = DEFAULT_ADMIN_USER_ID): UserData {
   const r = getDb().prepare(`SELECT * FROM user_item_data WHERE user_id = ? AND item_id = ?`).get(userId, itemId) as Record<string, unknown> | undefined
   if (!r) return { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }
@@ -2495,7 +2503,7 @@ export function getUserData(itemId: string, userId = DEFAULT_ADMIN_USER_ID): Use
   return {
     played:         !!(r.played as number),
     playCount:       r.play_count       as number,
-    positionTicks:   positionTicks >= MIN_RESUME_TICKS ? positionTicks : 0,
+    positionTicks:   positionTicks >= EARLY_STOP_FLOOR_TICKS ? positionTicks : 0,
     lastPlayedDate:  r.last_played_date as string,
   }
 }
@@ -2508,13 +2516,7 @@ export function clearProgress(itemId: string, userId = DEFAULT_ADMIN_USER_ID): v
   `).run(userId, itemId)
 }
 
-export function saveProgress(itemId: string, positionTicks: number, userId = DEFAULT_ADMIN_USER_ID): void {
-  if (positionTicks < MIN_RESUME_TICKS) {
-    const existing = getUserData(itemId, userId)
-    if (existing.positionTicks >= MIN_RESUME_TICKS) return
-    clearProgress(itemId, userId)
-    return
-  }
+function writePosition(itemId: string, positionTicks: number, userId: string): void {
   const now = new Date().toISOString()
   getDb().prepare(`
     INSERT INTO user_item_data (user_id, item_id, played, position_ticks, last_played_date, watch_state_source, watch_state_updated_at)
@@ -2525,6 +2527,25 @@ export function saveProgress(itemId: string, positionTicks: number, userId = DEF
                                                , watch_state_source = 'local'
                                                , watch_state_updated_at = excluded.watch_state_updated_at
   `).run(userId, itemId, positionTicks, now, now)
+}
+
+export function saveProgress(itemId: string, positionTicks: number, userId = DEFAULT_ADMIN_USER_ID): void {
+  if (positionTicks < MIN_RESUME_TICKS) {
+    const existing = getUserData(itemId, userId)
+    if (existing.positionTicks >= MIN_RESUME_TICKS) return
+    clearProgress(itemId, userId)
+    return
+  }
+  writePosition(itemId, positionTicks, userId)
+}
+
+// Bypasses saveProgress's keep-the-old-point rule above: a play that really
+// ran and then stopped between the 5s floor and MIN_RESUME_TICKS started over
+// from the beginning and was given up on early, and the owner wants that
+// stop's position kept in Continue Watching, overwriting whatever was there
+// before, rather than cleared.
+export function saveRestartPosition(itemId: string, positionTicks: number, userId = DEFAULT_ADMIN_USER_ID): void {
+  writePosition(itemId, positionTicks, userId)
 }
 
 export function listResumeItemIds(limit = 50, offset = 0, userId = DEFAULT_ADMIN_USER_ID): string[] {
@@ -2540,7 +2561,7 @@ export function listResumeItemIds(limit = 50, offset = 0, userId = DEFAULT_ADMIN
       item_id ASC
     LIMIT ?
     OFFSET ?
-  `).all(userId, MIN_RESUME_TICKS, limit, offset) as Array<{ item_id: string }>
+  `).all(userId, EARLY_STOP_FLOOR_TICKS, limit, offset) as Array<{ item_id: string }>
   return rows.map(r => r.item_id)
 }
 

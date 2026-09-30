@@ -6,7 +6,7 @@ import { config, normalizeListPresentation, discoverPresentationFromMode, DISCOV
 import { discoverSourceKey } from '../discover.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
-  listUsers, getUserData, saveProgress, clearProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds, MIN_RESUME_TICKS,
+  listUsers, getUserData, saveProgress, saveRestartPosition, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds, MIN_RESUME_TICKS, EARLY_STOP_FLOOR_TICKS,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, getFirstAiredEpisodeForShow, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
   authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
@@ -167,10 +167,6 @@ const RESUME_SERIES_PREFETCH_BOUND_MS = 3_000
 // same way.
 const PLAY_RAN_SINCE_STOP_TTL_MS = 6 * 60 * 60 * 1000
 const PLAY_RAN_SINCE_STOP_MAX_ITEMS = 1_000
-// Infuse's first Progress report of a resumed play lands around 1s, before it
-// seeks to the saved position. A Stop at or above this floor is far enough
-// past that seek to be a real stop, not the pre-seek report.
-const RESTART_CLEAR_FLOOR_TICKS = 5 * 10_000_000
 const playRanSinceStop = new Map<string, number>() // `${userId}:${itemId}` -> expiresAt
 
 function playRanSinceStopKey(userId: string, itemId: string): string {
@@ -4142,13 +4138,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       } else if (positionTicks != null) {
         // A play that really ran (a Progress report above 0 since the last Stop)
         // and stopped between the 5s floor and MIN_RESUME_TICKS started over from
-        // the beginning and was given up on early: clear the old resume point
-        // instead of saveProgress's keep-the-old-point rule below. The floor
-        // excludes Infuse's pre-seek first Progress report of a resumed play.
-        const restartedAndGaveUpEarly = ranSinceStop && positionTicks >= RESTART_CLEAR_FLOOR_TICKS && positionTicks < MIN_RESUME_TICKS
+        // the beginning and was given up on early: keep that stop's position in
+        // Continue Watching, overwriting the old point, instead of saveProgress's
+        // keep-the-old-point rule below. The floor excludes Infuse's pre-seek
+        // first Progress report of a resumed play.
+        const restartedAndGaveUpEarly = ranSinceStop && positionTicks >= EARLY_STOP_FLOOR_TICKS && positionTicks < MIN_RESUME_TICKS
         if (restartedAndGaveUpEarly) {
-          clearProgress(canonicalItemId, user.id)
-          app.log.info(`progress: cleared restart-from-beginning point ${canonicalItemId} at ${positionTicks} ticks`)
+          saveRestartPosition(canonicalItemId, positionTicks, user.id)
+          app.log.info(`progress: saved restart position ${canonicalItemId} at ${positionTicks} ticks`)
         } else {
           saveProgress(canonicalItemId, positionTicks, user.id)
           app.log.info(`progress: stopped ${canonicalItemId} at ${positionTicks} ticks`)

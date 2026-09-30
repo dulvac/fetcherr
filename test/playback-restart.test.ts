@@ -108,8 +108,8 @@ async function isInResume(app: ReturnType<typeof Fastify>, token: string, userId
 
 // ── The tests ────────────────────────────────────────────────────────────────
 
-test('a play that ran and stopped early clears the old resume point', async () => {
-  const { user, token } = authedUser('restart-clears')
+test('a play that ran and stopped early saves the stopped position instead of clearing it', async () => {
+  const { user, token } = authedUser('restart-saves')
   const app = await buildApp()
   const itemId = makeMovieItemId()
   db.saveProgress(itemId, OLD_POSITION_TICKS, user.id)
@@ -117,8 +117,24 @@ test('a play that ran and stopped early clears the old resume point', async () =
   await reportProgress(app, token, itemId, 3 * TICKS_PER_SEC)
   await stopPlaying(app, token, itemId, Math.round(8.4 * TICKS_PER_SEC))
 
-  assert.equal(await getPosition(app, token, user.id, itemId), 0)
-  assert.equal(await isInResume(app, token, user.id, itemId), false)
+  assert.equal(await getPosition(app, token, user.id, itemId), Math.round(8.4 * TICKS_PER_SEC))
+  assert.equal(await isInResume(app, token, user.id, itemId), true)
+  await app.close()
+})
+
+test('the owner\'s real sequence keeps the early-stop position and the item stays in resume', async () => {
+  const { user, token } = authedUser('owner-sequence')
+  const app = await buildApp()
+  const itemId = makeMovieItemId()
+
+  // Resumed at 1075.5s, jumped back to about 1:00, stopped at 71.6s.
+  await reportProgress(app, token, itemId, Math.round(1075 * TICKS_PER_SEC))
+  await reportProgress(app, token, itemId, Math.round(60 * TICKS_PER_SEC))
+  await reportProgress(app, token, itemId, Math.round(67 * TICKS_PER_SEC))
+  await stopPlaying(app, token, itemId, Math.round(71.6 * TICKS_PER_SEC))
+
+  assert.equal(await getPosition(app, token, user.id, itemId), Math.round(71.6 * TICKS_PER_SEC))
+  assert.equal(await isInResume(app, token, user.id, itemId), true)
   await app.close()
 })
 
@@ -175,7 +191,7 @@ test('a progress report from another account does not count for this one', async
   await app.close()
 })
 
-test('a stop forgets the remembered play, so a later stop with no new progress does not wrongly clear', async () => {
+test('a stop forgets the remembered play, so a later stop with no new progress does not wrongly overwrite', async () => {
   const { user, token } = authedUser('forget-on-stop')
   const app = await buildApp()
   const itemId = makeMovieItemId()
@@ -189,7 +205,7 @@ test('a stop forgets the remembered play, so a later stop with no new progress d
   // A second, unrelated stop with no progress report since the first stop. If
   // the remembered play had survived the first stop instead of being forgotten,
   // this position (5s-2min) would wrongly read as a restart-and-give-up and
-  // clear the point just saved above.
+  // overwrite the point just saved above.
   await stopPlaying(app, token, itemId, 8 * TICKS_PER_SEC)
 
   assert.equal(await getPosition(app, token, user.id, itemId), 3 * TICKS_PER_MIN)
