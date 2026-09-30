@@ -212,6 +212,47 @@ test('a stop forgets the remembered play, so a later stop with no new progress d
   await app.close()
 })
 
+test('a stop under 5s with no progress report keeps an existing early-stop position', async () => {
+  const { user, token } = authedUser('early-stop-survives-short-stop')
+  const app = await buildApp()
+  const itemId = makeMovieItemId()
+  db.saveRestartPosition(itemId, Math.round(71.6 * TICKS_PER_SEC), user.id)
+
+  await stopPlaying(app, token, itemId, 2 * TICKS_PER_SEC)
+
+  assert.equal(await getPosition(app, token, user.id, itemId), Math.round(71.6 * TICKS_PER_SEC))
+  await app.close()
+})
+
+test('a sub-2min progress report keeps an existing early-stop position, and a later stop still saves', async () => {
+  const { user, token } = authedUser('early-stop-survives-progress')
+  const app = await buildApp()
+  const itemId = makeMovieItemId()
+  db.saveRestartPosition(itemId, Math.round(71.6 * TICKS_PER_SEC), user.id)
+
+  // Infuse's first Progress report of a resumed play, before it seeks.
+  await reportProgress(app, token, itemId, 1 * TICKS_PER_SEC)
+  assert.equal(await getPosition(app, token, user.id, itemId), Math.round(71.6 * TICKS_PER_SEC))
+
+  await stopPlaying(app, token, itemId, 90 * TICKS_PER_SEC)
+
+  assert.equal(await getPosition(app, token, user.id, itemId), 90 * TICKS_PER_SEC)
+  await app.close()
+})
+
+test('a sub-2min progress report followed by a past-2min progress report saves the later position', async () => {
+  const { user, token } = authedUser('early-stop-then-real-progress')
+  const app = await buildApp()
+  const itemId = makeMovieItemId()
+  db.saveRestartPosition(itemId, Math.round(71.6 * TICKS_PER_SEC), user.id)
+
+  await reportProgress(app, token, itemId, 1 * TICKS_PER_SEC)
+  await reportProgress(app, token, itemId, 3 * TICKS_PER_MIN)
+
+  assert.equal(await getPosition(app, token, user.id, itemId), 3 * TICKS_PER_MIN)
+  await app.close()
+})
+
 // better-sqlite3 leaves the database plus its -wal and -shm sidecars in tmpdir,
 // once per run per file. Nothing else cleans them up.
 test.after(() => {

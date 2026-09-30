@@ -2519,8 +2519,13 @@ function writePosition(itemId: string, positionTicks: number, userId: string): v
 
 export function saveProgress(itemId: string, positionTicks: number, userId = DEFAULT_ADMIN_USER_ID): void {
   if (positionTicks < MIN_RESUME_TICKS) {
+    // getUserData floors reads at EARLY_STOP_FLOOR_TICKS, not MIN_RESUME_TICKS,
+    // so an already-stored early-stop point (5s-2min) must be protected against
+    // that same floor here too. Comparing against MIN_RESUME_TICKS would let the
+    // next ordinary sub-2min Progress or Stop report fall through to
+    // clearProgress and wipe a point this feature exists to keep.
     const existing = getUserData(itemId, userId)
-    if (existing.positionTicks >= MIN_RESUME_TICKS) return
+    if (existing.positionTicks >= EARLY_STOP_FLOOR_TICKS) return
     clearProgress(itemId, userId)
     return
   }
