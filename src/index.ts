@@ -23,6 +23,7 @@ import {
   torBoxRequestdlTorrentId,
 } from './torbox.js'
 import { resolveStream as pmResolveStream } from './premiumize.js'
+import { shouldWarmTorBoxLink, warmTorBoxLink } from './torbox-link.js'
 import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
@@ -330,6 +331,14 @@ function rememberTorBoxPlaybackUrl(playPath: string, resolved: PlayResolution): 
   torBoxPlaybackUrls.set(playPath, { url: resolved.url, expiresAt: Date.now() + PLAYBACK_ITEM_TTL_MS })
 }
 
+// TorBox's CDN needs a moment to learn a freshly issued presigned token, so
+// warm the link ourselves rather than hand the player a URL that 400s. The
+// resolved URL itself is untouched: cleanup tracking, rememberTorBoxPlaybackUrl
+// and the resolution caches all still key off it.
+async function playbackRedirectUrl(url: string): Promise<string> {
+  return shouldWarmTorBoxLink(url) ? await warmTorBoxLink(url) : url
+}
+
 function touchPlaybackItem(itemId: string): void {
   cleanupPlaybackPrewarmCache()
   const item = playbackItemPaths.get(itemId)
@@ -397,6 +406,12 @@ function prewarmPlayback(playPath: string, label: string): void {
   promise
     .then(resolved => {
       app.log.info(`prewarm: ready for ${label}${resolved.filename ? ` → ${resolved.filename}` : ''}`)
+      // Start the warm now instead of waiting for /play: it then overlaps the
+      // requestdl redirect and the CDN's first-byte probe with the player still
+      // loading subtitles, rather than adding that wait to /play's own latency.
+      // warmTorBoxLink caches the result (and joins an in-flight warm if /play
+      // gets there first), so this never does the work twice.
+      if (shouldWarmTorBoxLink(resolved.url)) warmTorBoxLink(resolved.url)
     })
     .catch(err => app.log.info(`prewarm: ended for ${label}: ${err}`))
     .finally(() => {
@@ -1901,7 +1916,7 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1939,7 +1954,7 @@ app.get('/play/:imdbId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1980,7 +1995,7 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
