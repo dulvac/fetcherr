@@ -39,8 +39,11 @@ interface CacheEntry {
   expiresAt: number
 }
 
-// Keyed by the requestdl URL, which is unique per playback attempt (it carries
-// the torrent id and file id), so distinct plays never collide here.
+// Keyed by the requestdl URL, which is not unique per play: it is built from
+// the account key, torrent id and file id, so every device playing that file
+// shares this one warmed link on purpose, which is what lets a seek reuse it
+// instead of warming again. TorBox's guidance is one device and at most a few
+// connections per link, so that sharing is by design, not a bug to fix here.
 const cache = new Map<string, CacheEntry>()
 const inflight = new Map<string, Promise<string>>()
 
