@@ -164,6 +164,19 @@ test('a stop under the 5s floor leaves the old resume point alone', async () => 
   await app.close()
 })
 
+test('an item with no saved position that is stopped early is not added to resume', async () => {
+  const { user, token } = authedUser('no-existing-point')
+  const app = await buildApp()
+  const itemId = makeMovieItemId()
+
+  await reportProgress(app, token, itemId, 3 * TICKS_PER_SEC)
+  await stopPlaying(app, token, itemId, 20 * TICKS_PER_SEC)
+
+  assert.equal(await getPosition(app, token, user.id, itemId), 0)
+  assert.equal(await isInResume(app, token, user.id, itemId), false)
+  await app.close()
+})
+
 test('a stop at or above 2 minutes still saves its position as today', async () => {
   const { user, token } = authedUser('long-stop-saves')
   const app = await buildApp()

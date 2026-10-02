@@ -4141,8 +4141,12 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         // the beginning and was given up on early: keep that stop's position in
         // Continue Watching, overwriting the old point, instead of saveProgress's
         // keep-the-old-point rule below. The floor excludes Infuse's pre-seek
-        // first Progress report of a resumed play.
-        const restartedAndGaveUpEarly = ranSinceStop && positionTicks >= EARLY_STOP_FLOOR_TICKS && positionTicks < MIN_RESUME_TICKS
+        // first Progress report of a resumed play. Gated on an existing resume
+        // point so a title played from the start and stopped early does not get
+        // added to Continue Watching for the first time: without a prior point,
+        // behaviour here is exactly saveProgress's own, below.
+        const hadExistingResumePoint = getUserData(canonicalItemId, user.id).positionTicks >= EARLY_STOP_FLOOR_TICKS
+        const restartedAndGaveUpEarly = hadExistingResumePoint && ranSinceStop && positionTicks >= EARLY_STOP_FLOOR_TICKS && positionTicks < MIN_RESUME_TICKS
         if (restartedAndGaveUpEarly) {
           saveRestartPosition(canonicalItemId, positionTicks, user.id)
           app.log.info(`progress: saved restart position ${canonicalItemId} at ${positionTicks} ticks`)
