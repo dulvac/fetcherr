@@ -146,18 +146,6 @@ const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 const proxiedImageCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>()
 const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summaries: TraktCollectionSummary[] }>()
-const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
-const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
-const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
-// Keyed by series id rather than by requested episode id, so resolving several
-// expired episodes of the same show shares one Cinemeta series fetch (see
-// fetchSeriesForStremioEpisodeRef below), whether or not the calls overlap.
-const stremioEpisodeRefSeriesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
-// How long handleResumeItems' series prefetch (below) waits before moving on
-// regardless. Bounds the worst case, a Cinemeta that hangs rather than
-// answers, to one wait instead of letting it hold up every row on the list,
-// library titles included.
-const RESUME_SERIES_PREFETCH_BOUND_MS = 3_000
 
 // Whether a Progress report above 0 has been seen for an account and item
 // since it last stopped, so Stopped can tell a real restart-and-give-up from
@@ -194,6 +182,19 @@ function didPlayRunSinceStop(userId: string, itemId: string): boolean {
 function forgetPlayRanSinceStop(userId: string, itemId: string): void {
   playRanSinceStop.delete(playRanSinceStopKey(userId, itemId))
 }
+
+const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
+const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
+const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
+// Keyed by series id rather than by requested episode id, so resolving several
+// expired episodes of the same show shares one Cinemeta series fetch (see
+// fetchSeriesForStremioEpisodeRef below), whether or not the calls overlap.
+const stremioEpisodeRefSeriesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
+// How long handleResumeItems' series prefetch (below) waits before moving on
+// regardless. Bounds the worst case, a Cinemeta that hangs rather than
+// answers, to one wait instead of letting it hold up every row on the list,
+// library titles included.
+const RESUME_SERIES_PREFETCH_BOUND_MS = 3_000
 
 type JellyfinRouteOptions = {
   searchOnly?: boolean
@@ -4085,8 +4086,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const canonicalItemId = normalizePlaybackItemId(itemId)
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
-      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       rememberStremioEpisodeRef(canonicalItemId)
+      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -4106,8 +4107,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const canonicalItemId = normalizePlaybackItemId(itemId)
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
-      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       rememberStremioEpisodeRef(canonicalItemId)
+      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -4161,6 +4162,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           saveProgress(canonicalItemId, positionTicks, user.id)
           app.log.info(`progress: stopped ${canonicalItemId} at ${positionTicks} ticks`)
         }
+        // Runs on both paths above, the restart save and the normal saveProgress:
+        // a search episode stopped early on the restart path still needs its ref
+        // written here, or it cannot be found again once its 15-minute cache lapses.
         rememberStremioEpisodeRef(canonicalItemId)
         if (canonicalItemId !== itemId) {
           app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
